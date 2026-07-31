@@ -167,6 +167,41 @@ enum DraftValidation {
         return value
     }
 
+    // MARK: - Product ids / category names (the ONE definition of what an id IS on the wire)
+
+    /// THE normalization every product id and category name crosses on its way to the wire,
+    /// used by BOTH `wireFields()` and `validationErrors()` at every site that emits one, so
+    /// the encoder and the validator can never disagree about what an id is.
+    ///
+    /// WHY THIS EXISTS (and why trimming is not cosmetic): `DealEngine` matches a reward SKU
+    /// with `line.productId == productId` and a product scope with `ids.contains(line.productId)`
+    /// — BYTE-EXACT, with no normalization anywhere downstream, in the register, the projector,
+    /// or the portal. An id that reaches Firestore carrying a stray space therefore decodes
+    /// cleanly, passes every bound, lists as **Active** in Station and in the portal, and never
+    /// fires at any register, with no error surfaced anywhere. Trimming HERE — at the wire
+    /// boundary, in one shared place — is what keeps that class of silent no-op unauthorable.
+    static func wireId(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// `wireId(_:)`, or `nil` when nothing survives the trim — the "is this a real id" check.
+    static func nonEmptyWireId(_ raw: String) -> String? {
+        let trimmed = wireId(raw)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// A `Set` of picked ids/names rendered as the deterministic wire array: each entry
+    /// normalized via `wireId(_:)`, whitespace-only entries DROPPED, duplicates-after-trim
+    /// collapsed, then sorted alphabetically.
+    ///
+    /// The sort is what makes the round-tripped `Deal.scope`'s order-sensitive `[String]`
+    /// independent of the `Set`'s hash-seeded iteration order (unchanged from before this
+    /// helper existed). The trim/drop/collapse steps are new, and are all no-ops for an
+    /// already-clean id list — a scope of `["b", "a"]` still emits exactly `["a", "b"]`.
+    static func wireIdList(_ raw: Set<String>) -> [String] {
+        Set(raw.compactMap(nonEmptyWireId)).sorted()
+    }
+
     /// `Decimal(string:)` is PERMISSIVE — it silently stops at the first character it can't
     /// parse rather than failing (verified empirically on this toolchain: `"12abc"` -> `12`,
     /// `"5.5.5"` -> `5.5`), which would let garbage user input through as a truncated number.
