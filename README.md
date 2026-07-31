@@ -98,10 +98,13 @@ guard let deal = DealDocumentSanitizer.decodeDeal(rawDict, id: snapshot.document
   `setData(fields, merge: true)`. See the ABSENT-vs-NULL rule above.
 
 Station still owns its own copy of this bridge (`App/Deals/DealsStore.swift`) because
-it also handles `Timestamp`; that copy predates this one and its reboxing step formats
-via `String(describing: NSNumber)`, which is `%0.16g` rather than shortest-round-trip
-and therefore reboxes `99.99` as `99.98999999999999`. The version here formats through
-`String(Double)` instead and is correct for both. Folding Station onto
+it also handles `Timestamp`. That copy once formatted its reboxing step via
+`String(describing: NSNumber)` (`%0.16g` rather than shortest-round-trip, reboxing
+`99.99` as `99.98999999999999`); Station fixed that in `483a8ad`, and both copies now
+format through `String(Double)`/`String(Float)` and pass an already-exact
+`NSDecimalNumber` straight through. The only remaining difference is that this
+package's acceptance guard additionally requires the decimal's own text to round-trip
+— belt-and-braces, not a wire difference. Folding Station onto
 `DealDocumentSanitizer` is a follow-up, gated on the same owner-approved re-pin as any
 other version bump.
 
