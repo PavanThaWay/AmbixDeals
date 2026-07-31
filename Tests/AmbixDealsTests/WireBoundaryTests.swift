@@ -166,3 +166,122 @@ struct WireIdBoundaryTests {
         #expect(deal.scope == .products(ids: [" sku-1 ", "sku-2"]))
     }
 }
+
+// MARK: - 2. An out-of-range GRANT quantity goes dormant, never generous, never fatal
+
+/// `unlockBonusProduct.quantity` is the only integer on this wire that is a GRANT rather than
+/// a threshold, so it is the only one where an absurd value is generous instead of inert.
+@Suite("Wire boundary — unlockBonusProduct grant quantity")
+struct GrantQuantityBoundaryTests {
+
+    private func dealJSON(quantity: String) -> Data {
+        Data("""
+        {"id":"d1","name":"Bonus","isActive":true,
+         "discount":{"kind":"unlockBonusProduct","productId":"sku-1","quantity":\(quantity)}}
+        """.utf8)
+    }
+
+    private func decodedQuantity(_ literal: String) throws -> Int {
+        let deal = try JSONDecoder().decode(Deal.self, from: dealJSON(quantity: literal))
+        guard case .unlockBonusProduct(_, let quantity) = deal.discount else {
+            throw WireBoundaryFailure.notAMap("unlockBonusProduct")
+        }
+        return quantity
+    }
+
+    // MARK: Decode — dormant, and above all still DECODABLE
+
+    @Test(
+        "a grant quantity the register cannot use decodes DORMANT (0) instead of failing the whole document",
+        arguments: [
+            "99999999999999999999999",  // past Int64 entirely
+            "1e23",                     // what a JS/Node author writes — Firestore stores a double
+            "2.5",                      // a fractional value in an integer field
+            "9223372036854775807",      // Int.max: representable, and 9.2 quintillion free units
+            "100001",                   // one past the ceiling
+            "\"7\"",                    // a string where a number belongs
+            "null",
+        ]
+    )
+    func hostileGrantQuantityDecodesDormant(_ literal: String) throws {
+        // The whole point: this must not throw. A throw takes the entire deal doc with it,
+        // and the deal then vanishes from every register while the portal still shows Active.
+        let deal = try JSONDecoder().decode(Deal.self, from: dealJSON(quantity: literal))
+        #expect(deal.id == "d1")
+        #expect(deal.isActive)
+        #expect(deal.discount == .unlockBonusProduct(productId: "sku-1", quantity: 0),
+                "literal: \(literal)")
+    }
+
+    @Test("a missing quantity key is dormant too, not a lost document")
+    func missingGrantQuantityDecodesDormant() throws {
+        let json = Data("""
+        {"id":"d1","name":"Bonus","isActive":true,
+         "discount":{"kind":"unlockBonusProduct","productId":"sku-1"}}
+        """.utf8)
+        let deal = try JSONDecoder().decode(Deal.self, from: json)
+        #expect(deal.discount == .unlockBonusProduct(productId: "sku-1", quantity: 0))
+    }
+
+    // MARK: Decode — wire compatibility
+
+    @Test("every in-range grant quantity decodes to EXACTLY the value it always did",
+          arguments: ["1", "2", "12", "999", "100000"])
+    func inRangeGrantQuantityIsUnchanged(_ literal: String) throws {
+        #expect(try decodedQuantity(literal) == Int(literal)!)
+    }
+
+    @Test("the ceiling is inclusive — 100000 is usable, 100001 is dormant")
+    func ceilingIsInclusive() throws {
+        #expect(try decodedQuantity("\(DraftValidation.maxGrantQuantity)") == DraftValidation.maxGrantQuantity)
+        #expect(try decodedQuantity("\(DraftValidation.maxGrantQuantity + 1)") == 0)
+    }
+
+    @Test("a negative grant quantity still round-trips verbatim — the engine's own guard makes it inert")
+    func negativeGrantQuantityIsUnchanged() throws {
+        #expect(try decodedQuantity("-4") == -4)
+    }
+
+    @Test("the threshold integers keep their unbounded decode — only the GRANT is capped")
+    func thresholdIntegersAreUnbounded() throws {
+        let json = Data("""
+        {"id":"d1","name":"T","isActive":true,
+         "discount":{"kind":"buyXGetYBonus","buyQty":500000,"bonusQty":1},
+         "condition":{"type":"minQuantity","value":500000}}
+        """.utf8)
+        let deal = try JSONDecoder().decode(Deal.self, from: json)
+        #expect(deal.discount == .buyXGetYBonus(buyQty: 500_000, bonusQty: 1))
+        #expect(deal.condition == .minQuantity(500_000))
+    }
+
+    // MARK: Authoring — blocked and reported, not silently landed on 0
+
+    @Test("an over-cap grant quantity is REPORTED to the manager rather than silently encoded")
+    func overCapGrantQuantityBlocksSave() {
+        var draft = validMinimalDraft()
+        draft.discount = .unlockBonusProduct(productId: "sku-1", quantity: "9223372036854775807")
+        #expect(draft.validationErrors == [.unlockBonusProductQuantityInvalid])
+        #expect(!draft.canSave)
+        #expect(draft.discount.wireFields() == nil)
+    }
+
+    @Test("the ceiling itself is authorable — the bound is inclusive on the encode side too")
+    func ceilingIsAuthorable() throws {
+        var draft = validMinimalDraft()
+        draft.discount = .unlockBonusProduct(
+            productId: "sku-1",
+            quantity: String(DraftValidation.maxGrantQuantity)
+        )
+        #expect(draft.canSave)
+        #expect(try decodedDeal(from: draft).discount
+                == .unlockBonusProduct(productId: "sku-1", quantity: DraftValidation.maxGrantQuantity))
+    }
+
+    @Test("an ordinary grant quantity still authors and round-trips exactly as before")
+    func ordinaryGrantQuantityRoundTrips() throws {
+        var draft = validMinimalDraft()
+        draft.discount = .unlockBonusProduct(productId: "sku-1", quantity: "2")
+        #expect(draft.canSave)
+        #expect(try decodedDeal(from: draft).discount == .unlockBonusProduct(productId: "sku-1", quantity: 2))
+    }
+}

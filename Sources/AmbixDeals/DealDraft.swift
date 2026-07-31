@@ -310,7 +310,7 @@ public enum DraftDiscount: Sendable, Equatable {
 
         case .unlockBonusProduct(let productId, let quantity):
             guard let rewardId = DraftValidation.nonEmptyWireId(productId),
-                  let qty = DraftValidation.positiveInt(quantity)
+                  let qty = DraftValidation.grantQuantity(quantity)
             else { return nil }
             return ["kind": .string("unlockBonusProduct"), "productId": .string(rewardId), "quantity": .int(qty)]
 
@@ -392,7 +392,7 @@ public enum DraftDiscount: Sendable, Equatable {
             if DraftValidation.nonEmptyWireId(productId) == nil {
                 errors.append(.unlockBonusProductMissing)
             }
-            if DraftValidation.positiveInt(quantity) == nil { errors.append(.unlockBonusProductQuantityInvalid) }
+            if DraftValidation.grantQuantity(quantity) == nil { errors.append(.unlockBonusProductQuantityInvalid) }
             return errors
 
         case .bundle(let components, let bundlePrice):

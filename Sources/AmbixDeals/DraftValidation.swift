@@ -74,7 +74,7 @@ public enum DraftError: Equatable, Sendable {
         case .bundleComponentQtyInvalid:
             return "Each bundle component's quantity must be at least 1."
         case .unlockBonusProductQuantityInvalid:
-            return "Bonus quantity must be at least 1."
+            return "Bonus quantity must be between 1 and \(DraftValidation.maxGrantQuantity)."
         case .unlockBonusProductMissing:
             return "A reward product is required."
         case .categoryScopeEmpty:
@@ -159,11 +159,45 @@ enum DraftValidation {
         return exceedsAmountCap(raw) ? .amountTooLarge : generic
     }
 
-    /// `≥ 1` — every quantity field (`buyQty`, `bonusQty`, tier `minQty`, bundle `qty`,
-    /// `unlockBonusProduct.quantity`, `minQuantity` condition).
+    /// `≥ 1` — every quantity field that is a THRESHOLD (`buyQty`, `bonusQty`, tier `minQty`,
+    /// bundle `qty`, `minQuantity` condition). Deliberately unbounded above: for a threshold, a
+    /// larger number makes the deal HARDER to trigger, so an absurd value fails safe by
+    /// construction. `unlockBonusProduct.quantity` is the one exception in the whole contract —
+    /// see `grantQuantity(_:)`.
     static func positiveInt(_ raw: String) -> Int? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let value = Int(trimmed), value >= 1 else { return nil }
+        return value
+    }
+
+    // MARK: - The one GRANT quantity in the contract
+
+    /// The ceiling on `unlockBonusProduct.quantity`.
+    ///
+    /// WHY THIS ONE INTEGER NEEDS A CEILING AND THE OTHERS DON'T: every other integer on this
+    /// wire is a THRESHOLD — `buyQty`, `bonusQty`, a tier's `minQty`, a bundle component's
+    /// `qty`, `condition.minQuantity` — where a runaway value simply means the deal never
+    /// triggers. `unlockBonusProduct.quantity` runs the other way: it is the number of free
+    /// units GRANTED, bounded only by what happens to be in the cart
+    /// (`DealEngine.unlockBonusProductOutcome`: `consumed = min(remaining, line.quantity)`).
+    /// An absurd value there is not conservative, it is maximally generous — it discounts every
+    /// matching pack in every cart, forever, and nothing downstream questions it.
+    ///
+    /// The number itself is chosen the same way `maxAmountDollars` is: comfortably past
+    /// anything a real retail pricing rule needs (realistic grants are 1–12), and low enough
+    /// that a corrupt or machine-authored value lands outside it.
+    static let maxGrantQuantity: Int = 100_000
+
+    /// `1 ≤ quantity ≤ maxGrantQuantity` — the authoring-side bound for
+    /// `unlockBonusProduct.quantity`. Shared by `wireFields()` and `validationErrors()` so an
+    /// over-cap grant is reported to the manager rather than silently encoded.
+    ///
+    /// Its DECODE-side twin is `DealDiscount.decodedGrantQuantity` in `Deal.swift`, which lands
+    /// an out-of-range stored value on `0` (dormant) instead of throwing. The two are
+    /// deliberately different shapes for the same bound: an author must be BLOCKED and told;
+    /// a register must never lose a whole document over one bad field.
+    static func grantQuantity(_ raw: String) -> Int? {
+        guard let value = positiveInt(raw), value <= maxGrantQuantity else { return nil }
         return value
     }
 

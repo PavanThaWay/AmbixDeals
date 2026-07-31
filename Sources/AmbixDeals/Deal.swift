@@ -394,8 +394,11 @@ extension DealDiscount: Decodable {
             self = .mixedCase(tiers: try container.decode([MixedCaseTier].self, forKey: .tiers))
         case "unlockBonusProduct":
             let productId = try container.decode(String.self, forKey: .productId)
-            let quantity = try container.decode(Int.self, forKey: .quantity)
-            self = .unlockBonusProduct(productId: productId, quantity: quantity)
+            // NOT `try container.decode(Int.self, …)` — see `decodedGrantQuantity`.
+            self = .unlockBonusProduct(
+                productId: productId,
+                quantity: Self.decodedGrantQuantity(container)
+            )
         case "unlockAmountOffCart":
             let dollars = try container.decode(Decimal.self, forKey: .amount)
             self = .unlockAmountOffCart(amount: Money(decimalDollars: dollars))
@@ -410,6 +413,40 @@ extension DealDiscount: Decodable {
             // `DealEngine` never fires it. See the case's own doc comment.
             self = .unsupported(kind: kind)
         }
+    }
+
+    /// `unlockBonusProduct.quantity`, decoded DORMANT-on-anything-unusable rather than
+    /// throwing. The only decode site in this file that reads an integer this way, for two
+    /// reasons that both point the same direction:
+    ///
+    /// 1. **It is a GRANT, not a threshold.** Every other integer on this wire (`buyQty`,
+    ///    `bonusQty`, tier `minQty`, bundle `qty`, `condition.minQuantity`) is a threshold — a
+    ///    runaway value there just means the deal never triggers. This one is the number of
+    ///    free units handed out, bounded only by the cart (`unlockBonusProductOutcome`), so a
+    ///    runaway value is maximally GENEROUS: it discounts every matching pack in every cart.
+    ///    Anything past `DraftValidation.maxGrantQuantity` is therefore neutralized to `0`,
+    ///    where the engine's own `guard quantity > 0` makes the deal inert.
+    /// 2. **A throw here costs the WHOLE document.** `Deal.init(from:)` reads `discount` with a
+    ///    bare `try` (not the `try?` that `scope`/`condition`/`schedule` get), so one
+    ///    unrepresentable number — a JS-authored `1e23`, a `2.5` in an integer field, a value
+    ///    past `Int64` — used to fail the entire deal doc. That deal then vanishes from every
+    ///    register while the portal still lists it **Active**: strictly worse than a dormant
+    ///    deal, because a dormant deal stays visible and diagnosable. Verified: `try?` on the
+    ///    container recovers cleanly from all three; the document itself parses fine.
+    ///
+    /// A NEGATIVE quantity is passed through unchanged (`guard quantity > 0` already makes it
+    /// inert) so a stored value still round-trips faithfully for anyone logging it.
+    ///
+    /// The authoring-side twin is `DraftValidation.grantQuantity(_:)`, which BLOCKS the save
+    /// and tells the manager instead of silently landing on `0` — an author should be
+    /// corrected; a register should never lose a document.
+    private static func decodedGrantQuantity(_ container: KeyedDecodingContainer<CodingKeys>) -> Int {
+        // `try?` FLATTENS the `Int??` here, so one `guard let` covers both "the key is absent"
+        // and "the value is present but unusable" — the two land on the same dormant `0`.
+        guard let quantity = try? container.decodeIfPresent(Int.self, forKey: .quantity) else {
+            return 0
+        }
+        return quantity <= DraftValidation.maxGrantQuantity ? quantity : 0
     }
 }
 
