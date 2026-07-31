@@ -24,7 +24,11 @@ import Testing
 /// `Double` itself — `NSDecimalNumber` serializes via its own exact decimal text, confirmed
 /// byte-for-byte lossless through this exact `JSONSerialization` -> `JSONDecoder` pipeline for
 /// every money/percent magnitude this sweep exercises.
-private func firestoreValueToAny(_ value: FirestoreValue) -> Any {
+///
+/// NOT `private`: `WireBoundaryTests.swift` runs its own assertions through this EXACT
+/// pipeline, and a second hand-rolled copy of a helper this subtle is precisely how two test
+/// files start disagreeing about what the wire says.
+func firestoreValueToAny(_ value: FirestoreValue) -> Any {
     switch value {
     case .string(let s):
         return s
@@ -51,8 +55,8 @@ private func firestoreValueToAny(_ value: FirestoreValue) -> Any {
 }
 
 /// The lockstep pipeline itself: `mirrorWrite().fields` -> `[String: Any]` -> `JSONSerialization`
-/// -> `JSONDecoder` -> `Deal`.
-private func decodedDeal(from draft: DealDraft) throws -> Deal {
+/// -> `JSONDecoder` -> `Deal`. NOT `private` — shared with `WireBoundaryTests.swift`.
+func decodedDeal(from draft: DealDraft) throws -> Deal {
     let fields = draft.mirrorWrite().fields.mapValues(firestoreValueToAny)
     let data = try JSONSerialization.data(withJSONObject: fields)
     return try JSONDecoder().decode(Deal.self, from: data)
@@ -79,8 +83,8 @@ private func containsServerTimestamp(_ value: FirestoreValue) -> Bool {
 /// A minimal, fully-valid draft: `flatPercentOff(10)`, `.all` scope, `.always` condition,
 /// schedule disabled, no coupon, zero limits, no margin-floor override. Every validation-matrix
 /// test below copies this and mutates ONE thing, so a failing assertion is unambiguously
-/// attributable to that one change.
-private func validMinimalDraft(id: String = "deal-valid") -> DealDraft {
+/// attributable to that one change. NOT `private` — shared with `WireBoundaryTests.swift`.
+func validMinimalDraft(id: String = "deal-valid") -> DealDraft {
     var draft = DealDraft(id: id)
     draft.name = "Valid Deal"
     draft.discount = .flatPercentOff(percent: "10")

@@ -61,11 +61,49 @@ Engine-adjacent tests (`DealEngine*Tests.swift`, `DealTraceTests.swift`,
   documents from the same `MirrorWrite` — build (or reuse) a merge-true renderer,
   don't assume.
 - The decode engine matters as much as the codec: identical `Deal.init(from:)`
-  behavior requires feeding it through an equivalent JSON bridge. Station's own
-  `DealsStore.sanitizedDocument` (JSONSerialization → JSONDecoder, with an
-  NSNumber-reboxing fix and Timestamp→ISO conversion) is the reference
-  implementation; a consumer using Firestore's native `Decoder` (e.g. `doc.data(as:)`)
-  is not guaranteed to produce identical results for `Decimal`-typed fields.
+  behavior requires feeding it through an equivalent JSON bridge. That bridge now
+  lives HERE, in `DealDocumentSanitizer` — see **Host-adapter contract** below.
+
+## Host-adapter contract (READ THIS BEFORE WIRING UP A NEW APP)
+
+`Deal` is a plain `Decodable`, so any host *could* feed it any `Decoder`. In practice
+exactly one bridge is correct, and getting it wrong is **silent**: it yields a `Deal`
+that decodes without error and carries a subtly wrong number.
+
+```swift
+// The whole contract, per document:
+guard let deal = DealDocumentSanitizer.decodeDeal(rawDict, id: snapshot.documentID) else {
+    continue   // skip this ONE doc — never drop the whole list
+}
+```
+
+- **Always go through `DealDocumentSanitizer.decodeDeal(_:id:)`.** The Firestore SDK
+  returns every number as an `NSNumber`, and serializing a *floating* `NSNumber`
+  through `JSONSerialization` expands a clean `33.33` into the JSON text
+  `33.329999999999998`. Money fields hide it (they round to the cent); **percent
+  fields do not** — `flatPercentOff.percent`, `buyXGetYPercentOff.percentOff`,
+  `unlockPercentOffCart.percent` and a `mixedCase` tier's `discountPercent` decode a
+  dirty double into an equally dirty `Decimal`, echo it back into the editor, and
+  persist it on the next save. This guard was an empirically confirmed production
+  defect in Station before it moved here.
+- **`doc.data(as: Deal.self)` is NOT equivalent.** Firestore's native decoder is not
+  guaranteed to produce identical `Decimal`-typed fields. Don't use it for `Deal`.
+- **Convert `Timestamp` → ISO-8601 string *before* calling.** This package has no
+  Firebase dependency and cannot see a `Timestamp`; `JSONSerialization` cannot
+  serialize one at all, so a document still carrying one decodes to `nil`. Use
+  `FirestoreValue.iso8601` — the same formatter this package's writes emit.
+- **A `nil` return means "skip this one document,"** never "drop the list." Deals are
+  independent; one malformed doc must not take the store's whole pricing with it.
+- **Writes:** every `MirrorWrite` this package produces assumes the host writes with
+  `setData(fields, merge: true)`. See the ABSENT-vs-NULL rule above.
+
+Station still owns its own copy of this bridge (`App/Deals/DealsStore.swift`) because
+it also handles `Timestamp`; that copy predates this one and its reboxing step formats
+via `String(describing: NSNumber)`, which is `%0.16g` rather than shortest-round-trip
+and therefore reboxes `99.99` as `99.98999999999999`. The version here formats through
+`String(Double)` instead and is correct for both. Folding Station onto
+`DealDocumentSanitizer` is a follow-up, gated on the same owner-approved re-pin as any
+other version bump.
 
 ## Local-override workflow (day-to-day Station/Daisho dev)
 

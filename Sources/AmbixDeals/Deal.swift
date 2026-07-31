@@ -79,12 +79,12 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         self.couponCode = couponCode
         self.perCustomerLimit = perCustomerLimit
         self.usageLimit = usageLimit
-        // Clamped the same way the decode path (below) clamps — see that comment for the
-        // overflow/floor-inflation rationale. Without this, a caller building a `Deal`
-        // directly (bypassing `JSONDecoder`) could still construct one carrying a raw
-        // negative override, which the decode-path comment's "every consumer downstream
-        // can trust the invariant" claim did not actually hold until now.
-        self.marginFloorOverrideCents = marginFloorOverrideCents.map { max(0, $0) }
+        // Sanitized the same way the decode path (below) sanitizes — see
+        // `sanitizedMarginFloorOverride` for both bounds' rationale. Without this, a caller
+        // building a `Deal` directly (bypassing `JSONDecoder`) could still construct one
+        // carrying a raw negative override, which the decode-path comment's "every consumer
+        // downstream can trust the invariant" claim did not actually hold until now.
+        self.marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(marginFloorOverrideCents)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -137,16 +137,41 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         couponCode = try container.decodeIfPresent(String.self, forKey: .couponCode)
         perCustomerLimit = try container.decodeIfPresent(Int.self, forKey: .perCustomerLimit) ?? 0
         usageLimit = try container.decodeIfPresent(Int.self, forKey: .usageLimit) ?? 0
-        // Clamped to `max(0, value)` at the DECODE boundary — never a raw negative or
-        // `Int.min` past this point. `DealEngine.clampToCostFloor` reads this value directly as
-        // `maxDiscount = max(0, lineTotal - floorBasis)`; an unclamped negative override would
-        // make `floorBasis` negative, which INFLATES `maxDiscount` above `lineTotal` and
-        // silently disables the cost floor even with `allowBelowCost == false` — the opposite
-        // of what a "floor" is supposed to do. An unclamped `Int.min` is worse: `lineTotal -
-        // Int.min` traps (signed integer overflow) the first time any line clamps against it.
-        // Clamping once here means every consumer downstream can trust the invariant
-        // `marginFloorOverrideCents >= 0` without re-validating it itself.
-        marginFloorOverrideCents = try container.decodeIfPresent(Int.self, forKey: .marginFloorOverrideCents).map { max(0, $0) }
+        // Sanitized at the DECODE boundary — see `sanitizedMarginFloorOverride`.
+        marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(
+            try container.decodeIfPresent(Int.self, forKey: .marginFloorOverrideCents)
+        )
+    }
+
+    /// The margin-floor override, bounded at BOTH ends before any consumer sees it.
+    /// `DealEngine.clampToCostFloor` reads this value directly as
+    /// `maxDiscount = max(0, lineTotal - floorBasis)` where `floorBasis` is this override when
+    /// present, else the line's real cost — so each end fails a different, specific way:
+    ///
+    /// - **Below 0 -> `0`** (unchanged behavior). A negative `floorBasis` INFLATES `maxDiscount`
+    ///   above `lineTotal`, silently disabling the cost floor even with `allowBelowCost == false`
+    ///   — the opposite of what a "floor" is. `Int.min` is worse: `lineTotal - Int.min` traps on
+    ///   signed overflow the first time any line clamps against it.
+    /// - **Above `DraftValidation.maxAmountCents` -> `nil`** (the bound this was missing). The
+    ///   old clamp was LOWER-BOUND-ONLY, so a 12-digit override sailed straight through, and a
+    ///   `floorBasis` larger than any line total yields `maxDiscount == 0` on EVERY line: the
+    ///   deal exists, reads Active in Station and in the portal, and discounts nothing, forever,
+    ///   with nothing anywhere reporting a problem.
+    ///
+    /// `nil` rather than a clamp-to-ceiling is the deliberate choice, because clamping does not
+    /// fix the symptom — a $100,000 floor still exceeds every realistic line total and still
+    /// discounts nothing. An override this far out of range cannot have been authored through
+    /// `DealDraft` (`validationErrors` rejects it with `.amountTooLarge`), so it is corruption,
+    /// and the safe reading of corruption is "don't trust it": `nil` falls back to the item's
+    /// REAL cost floor, which both protects margin and lets the deal actually apply. Clamping to
+    /// `0` would be the unsafe direction — that means no floor at all.
+    ///
+    /// This is the DECODE-side twin of `DealDraft.validationErrors`'s two-bound check on
+    /// `marginFloorOverride`, sharing its ceiling so the author and the register agree on what
+    /// a plausible floor is.
+    static func sanitizedMarginFloorOverride(_ cents: Int?) -> Int? {
+        guard let cents, cents <= DraftValidation.maxAmountCents else { return nil }
+        return max(0, cents)
     }
 }
 
@@ -394,8 +419,11 @@ extension DealDiscount: Decodable {
             self = .mixedCase(tiers: try container.decode([MixedCaseTier].self, forKey: .tiers))
         case "unlockBonusProduct":
             let productId = try container.decode(String.self, forKey: .productId)
-            let quantity = try container.decode(Int.self, forKey: .quantity)
-            self = .unlockBonusProduct(productId: productId, quantity: quantity)
+            // NOT `try container.decode(Int.self, …)` — see `decodedGrantQuantity`.
+            self = .unlockBonusProduct(
+                productId: productId,
+                quantity: Self.decodedGrantQuantity(container)
+            )
         case "unlockAmountOffCart":
             let dollars = try container.decode(Decimal.self, forKey: .amount)
             self = .unlockAmountOffCart(amount: Money(decimalDollars: dollars))
@@ -410,6 +438,40 @@ extension DealDiscount: Decodable {
             // `DealEngine` never fires it. See the case's own doc comment.
             self = .unsupported(kind: kind)
         }
+    }
+
+    /// `unlockBonusProduct.quantity`, decoded DORMANT-on-anything-unusable rather than
+    /// throwing. The only decode site in this file that reads an integer this way, for two
+    /// reasons that both point the same direction:
+    ///
+    /// 1. **It is a GRANT, not a threshold.** Every other integer on this wire (`buyQty`,
+    ///    `bonusQty`, tier `minQty`, bundle `qty`, `condition.minQuantity`) is a threshold — a
+    ///    runaway value there just means the deal never triggers. This one is the number of
+    ///    free units handed out, bounded only by the cart (`unlockBonusProductOutcome`), so a
+    ///    runaway value is maximally GENEROUS: it discounts every matching pack in every cart.
+    ///    Anything past `DraftValidation.maxGrantQuantity` is therefore neutralized to `0`,
+    ///    where the engine's own `guard quantity > 0` makes the deal inert.
+    /// 2. **A throw here costs the WHOLE document.** `Deal.init(from:)` reads `discount` with a
+    ///    bare `try` (not the `try?` that `scope`/`condition`/`schedule` get), so one
+    ///    unrepresentable number — a JS-authored `1e23`, a `2.5` in an integer field, a value
+    ///    past `Int64` — used to fail the entire deal doc. That deal then vanishes from every
+    ///    register while the portal still lists it **Active**: strictly worse than a dormant
+    ///    deal, because a dormant deal stays visible and diagnosable. Verified: `try?` on the
+    ///    container recovers cleanly from all three; the document itself parses fine.
+    ///
+    /// A NEGATIVE quantity is passed through unchanged (`guard quantity > 0` already makes it
+    /// inert) so a stored value still round-trips faithfully for anyone logging it.
+    ///
+    /// The authoring-side twin is `DraftValidation.grantQuantity(_:)`, which BLOCKS the save
+    /// and tells the manager instead of silently landing on `0` — an author should be
+    /// corrected; a register should never lose a document.
+    private static func decodedGrantQuantity(_ container: KeyedDecodingContainer<CodingKeys>) -> Int {
+        // `try?` FLATTENS the `Int??` here, so one `guard let` covers both "the key is absent"
+        // and "the value is present but unusable" — the two land on the same dormant `0`.
+        guard let quantity = try? container.decodeIfPresent(Int.self, forKey: .quantity) else {
+            return 0
+        }
+        return quantity <= DraftValidation.maxGrantQuantity ? quantity : 0
     }
 }
 

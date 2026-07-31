@@ -309,9 +309,10 @@ public enum DraftDiscount: Sendable, Equatable {
             return ["kind": .string("mixedCase"), "tiers": .array(wireTiers)]
 
         case .unlockBonusProduct(let productId, let quantity):
-            let trimmedId = productId.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmedId.isEmpty, let qty = DraftValidation.positiveInt(quantity) else { return nil }
-            return ["kind": .string("unlockBonusProduct"), "productId": .string(trimmedId), "quantity": .int(qty)]
+            guard let rewardId = DraftValidation.nonEmptyWireId(productId),
+                  let qty = DraftValidation.grantQuantity(quantity)
+            else { return nil }
+            return ["kind": .string("unlockBonusProduct"), "productId": .string(rewardId), "quantity": .int(qty)]
 
         case .unlockAmountOffCart(let amount):
             guard let value = DraftValidation.positiveDecimal(amount) else { return nil }
@@ -326,8 +327,10 @@ public enum DraftDiscount: Sendable, Equatable {
             var wireComponents: [FirestoreValue] = []
             for component in components {
                 guard let qty = DraftValidation.positiveInt(component.qty) else { return nil }
-                let trimmedId = component.productId.trimmingCharacters(in: .whitespacesAndNewlines)
-                wireComponents.append(.map(["productId": .string(trimmedId), "qty": .int(qty)]))
+                wireComponents.append(.map([
+                    "productId": .string(DraftValidation.wireId(component.productId)),
+                    "qty": .int(qty),
+                ]))
             }
             guard let price = DraftValidation.positiveDecimal(bundlePrice) else { return nil }
             return ["kind": .string("bundle"), "components": .array(wireComponents), "bundlePrice": moneyWireValue(price)]
@@ -386,10 +389,10 @@ public enum DraftDiscount: Sendable, Equatable {
 
         case .unlockBonusProduct(let productId, let quantity):
             var errors: [DraftError] = []
-            if productId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if DraftValidation.nonEmptyWireId(productId) == nil {
                 errors.append(.unlockBonusProductMissing)
             }
-            if DraftValidation.positiveInt(quantity) == nil { errors.append(.unlockBonusProductQuantityInvalid) }
+            if DraftValidation.grantQuantity(quantity) == nil { errors.append(.unlockBonusProductQuantityInvalid) }
             return errors
 
         case .bundle(let components, let bundlePrice):
@@ -459,7 +462,7 @@ extension DraftDiscount {
 /// `productId` trimmed non-empty, and every trimmed id DISTINCT.
 private func bundleComponentsAreDistinct(_ components: [DraftBundleComponent]) -> Bool {
     guard components.count >= 2 else { return false }
-    let trimmed = components.map { $0.productId.trimmingCharacters(in: .whitespacesAndNewlines) }
+    let trimmed = components.map { DraftValidation.wireId($0.productId) }
     guard trimmed.allSatisfy({ !$0.isEmpty }) else { return false }
     return Set(trimmed).count == components.count
 }
@@ -514,9 +517,17 @@ public enum DraftScope: Sendable, Equatable {
     case products(ids: Set<String>)
 
     /// `{"type": ..., "ids": [String]}` against `Deal.swift:181-200`. `names`/`ids` are
-    /// `Set`s with no defined iteration order, so both sort ALPHABETICALLY before hitting the
-    /// wire — the only way the round-tripped `Deal.scope`'s `[String]` array (order-sensitive
-    /// `Equatable`) is deterministic and independent of the Set's internal hash-seeded order.
+    /// `Set`s with no defined iteration order, so both go through `DraftValidation.wireIdList`,
+    /// which sorts ALPHABETICALLY before hitting the wire — the only way the round-tripped
+    /// `Deal.scope`'s `[String]` array (order-sensitive `Equatable`) is deterministic and
+    /// independent of the Set's internal hash-seeded order.
+    ///
+    /// That same helper is also what TRIMS each entry. A scope is matched byte-exact
+    /// (`DealEngine.scopeMatches`: `ids.contains(line.productId)` / `names.contains(
+    /// line.categoryName)`), so a padded `" sku-1 "` reaching Firestore would decode cleanly,
+    /// pass the ≥1-entry bound, list as Active everywhere, and match nothing at any register.
+    /// The picker UI is the only intended author of these sets, but "the picker never pads"
+    /// is not an invariant this type can enforce — normalizing at the wire boundary is.
     ///
     /// `.all` emits an explicit `ids: .null` rather than omitting the key: nested maps merge
     /// key by key under `setData(merge: true)`, so narrowing a category/products scope back to
@@ -528,20 +539,23 @@ public enum DraftScope: Sendable, Equatable {
         case .all:
             return ["type": .string("all"), "ids": .null]
         case .category(let names):
-            return ["type": .string("category"), "ids": .array(names.sorted().map { .string($0) })]
+            return ["type": .string("category"), "ids": .array(DraftValidation.wireIdList(names).map { .string($0) })]
         case .products(let ids):
-            return ["type": .string("products"), "ids": .array(ids.sorted().map { .string($0) })]
+            return ["type": .string("products"), "ids": .array(DraftValidation.wireIdList(ids).map { .string($0) })]
         }
     }
 
+    /// The ≥1-entry bound is checked against the NORMALIZED list `wireFields()` will actually
+    /// emit, not the raw `Set` — otherwise a scope holding nothing but whitespace entries
+    /// passes here and then emits an array that can never match a line.
     func validationErrors() -> [DraftError] {
         switch self {
         case .all:
             return []
         case .category(let names):
-            return names.isEmpty ? [.categoryScopeEmpty] : []
+            return DraftValidation.wireIdList(names).isEmpty ? [.categoryScopeEmpty] : []
         case .products(let ids):
-            return ids.isEmpty ? [.productsScopeEmpty] : []
+            return DraftValidation.wireIdList(ids).isEmpty ? [.productsScopeEmpty] : []
         }
     }
 }
