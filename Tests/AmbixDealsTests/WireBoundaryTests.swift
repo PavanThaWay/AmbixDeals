@@ -285,3 +285,102 @@ struct GrantQuantityBoundaryTests {
         #expect(try decodedDeal(from: draft).discount == .unlockBonusProduct(productId: "sku-1", quantity: 2))
     }
 }
+
+// MARK: - 4. The margin-floor override is bounded at BOTH ends
+
+/// `DealEngine.clampToCostFloor` reads `marginFloorOverrideCents` directly as
+/// `maxDiscount = max(0, lineTotal - floorBasis)`, so this one integer can disable the cost
+/// floor entirely (too low) or disable the DEAL entirely (too high), and neither shows up
+/// anywhere in a UI.
+@Suite("Wire boundary — margin-floor override")
+struct MarginFloorBoundaryTests {
+
+    private func dealJSON(overrideCents: String) -> Data {
+        Data("""
+        {"id":"d1","name":"Floor","isActive":true,
+         "discount":{"kind":"flatPercentOff","percent":10},
+         "marginFloorOverrideCents":\(overrideCents)}
+        """.utf8)
+    }
+
+    // MARK: Authoring — BOTH rules must stay reachable and un-clamped
+
+    /// The reviewed defect was "a runaway paste is clamped to a positive huge cent count before
+    /// validation, so a lower-bound-only rule waves it through." This package never clamped
+    /// `DealDraft.marginFloorOverride`, and checks both bounds. These two tests exist to keep it
+    /// that way — introducing a clamp on the draft would break them.
+    @Test("a runaway paste is REPORTED, not clamped into validity")
+    func runawayPasteIsReported() {
+        var draft = validMinimalDraft()
+        draft.marginFloorOverride = Money(dollars: 999_999_999_999)
+
+        // Un-clamped: validation sees the real, huge cent count.
+        #expect(draft.marginFloorOverride!.cents > DraftValidation.maxAmountCents)
+        #expect(draft.validationErrors == [.amountTooLarge])
+        #expect(!draft.canSave)
+    }
+
+    @Test("a negative override is REPORTED, not clamped to zero before validation runs")
+    func negativeOverrideIsReported() {
+        var draft = validMinimalDraft()
+        draft.marginFloorOverride = Money(cents: -500)
+
+        #expect(draft.marginFloorOverride!.cents == -500)
+        #expect(draft.validationErrors == [.marginFloorOverrideNegative])
+        #expect(!draft.canSave)
+    }
+
+    @Test("the ceiling is inclusive on the authoring side")
+    func authoringCeilingIsInclusive() {
+        var draft = validMinimalDraft()
+        draft.marginFloorOverride = Money(cents: DraftValidation.maxAmountCents)
+        #expect(draft.canSave)
+
+        draft.marginFloorOverride = Money(cents: DraftValidation.maxAmountCents + 1)
+        #expect(draft.validationErrors == [.amountTooLarge])
+    }
+
+    // MARK: Decode — the bound that WAS missing
+
+    @Test("an override too large to be a real floor is DROPPED, not carried through to disable the deal")
+    func oversizedOverrideIsDropped() throws {
+        for literal in ["999999999999", "\(DraftValidation.maxAmountCents + 1)", "\(Int.max)"] {
+            let deal = try JSONDecoder().decode(Deal.self, from: dealJSON(overrideCents: literal))
+            // nil = fall back to the line's REAL cost floor: the deal still applies, and margin
+            // is still protected. Carrying the value through gave maxDiscount == 0 on every line.
+            #expect(deal.marginFloorOverrideCents == nil, "literal: \(literal)")
+        }
+        #expect(Deal.sanitizedMarginFloorOverride(Int.max) == nil)
+    }
+
+    @Test("a negative override still clamps to 0 — unchanged behavior, pinned")
+    func negativeOverrideStillClampsToZero() throws {
+        let deal = try JSONDecoder().decode(Deal.self, from: dealJSON(overrideCents: "-500"))
+        #expect(deal.marginFloorOverrideCents == 0)
+        #expect(Deal.sanitizedMarginFloorOverride(Int.min) == 0)
+    }
+
+    // MARK: Decode — wire compatibility
+
+    @Test("every plausible stored override decodes to EXACTLY the value it always did",
+          arguments: ["0", "1", "50", "1999", "10000000"])
+    func plausibleOverridesAreUnchanged(_ literal: String) throws {
+        let deal = try JSONDecoder().decode(Deal.self, from: dealJSON(overrideCents: literal))
+        #expect(deal.marginFloorOverrideCents == Int(literal)!)
+    }
+
+    @Test("an absent override is still absent")
+    func absentOverrideStaysAbsent() throws {
+        let json = Data("""
+        {"id":"d1","name":"Floor","isActive":true,"discount":{"kind":"flatPercentOff","percent":10}}
+        """.utf8)
+        #expect(try JSONDecoder().decode(Deal.self, from: json).marginFloorOverrideCents == nil)
+    }
+
+    @Test("an authored override survives the full draft -> wire -> Deal round trip")
+    func authoredOverrideRoundTrips() throws {
+        var draft = validMinimalDraft()
+        draft.marginFloorOverride = Money(cents: 1_999)
+        #expect(try decodedDeal(from: draft).marginFloorOverrideCents == 1_999)
+    }
+}

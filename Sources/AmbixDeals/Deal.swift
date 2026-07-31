@@ -79,12 +79,12 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         self.couponCode = couponCode
         self.perCustomerLimit = perCustomerLimit
         self.usageLimit = usageLimit
-        // Clamped the same way the decode path (below) clamps — see that comment for the
-        // overflow/floor-inflation rationale. Without this, a caller building a `Deal`
-        // directly (bypassing `JSONDecoder`) could still construct one carrying a raw
-        // negative override, which the decode-path comment's "every consumer downstream
-        // can trust the invariant" claim did not actually hold until now.
-        self.marginFloorOverrideCents = marginFloorOverrideCents.map { max(0, $0) }
+        // Sanitized the same way the decode path (below) sanitizes — see
+        // `sanitizedMarginFloorOverride` for both bounds' rationale. Without this, a caller
+        // building a `Deal` directly (bypassing `JSONDecoder`) could still construct one
+        // carrying a raw negative override, which the decode-path comment's "every consumer
+        // downstream can trust the invariant" claim did not actually hold until now.
+        self.marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(marginFloorOverrideCents)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -137,16 +137,41 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         couponCode = try container.decodeIfPresent(String.self, forKey: .couponCode)
         perCustomerLimit = try container.decodeIfPresent(Int.self, forKey: .perCustomerLimit) ?? 0
         usageLimit = try container.decodeIfPresent(Int.self, forKey: .usageLimit) ?? 0
-        // Clamped to `max(0, value)` at the DECODE boundary — never a raw negative or
-        // `Int.min` past this point. `DealEngine.clampToCostFloor` reads this value directly as
-        // `maxDiscount = max(0, lineTotal - floorBasis)`; an unclamped negative override would
-        // make `floorBasis` negative, which INFLATES `maxDiscount` above `lineTotal` and
-        // silently disables the cost floor even with `allowBelowCost == false` — the opposite
-        // of what a "floor" is supposed to do. An unclamped `Int.min` is worse: `lineTotal -
-        // Int.min` traps (signed integer overflow) the first time any line clamps against it.
-        // Clamping once here means every consumer downstream can trust the invariant
-        // `marginFloorOverrideCents >= 0` without re-validating it itself.
-        marginFloorOverrideCents = try container.decodeIfPresent(Int.self, forKey: .marginFloorOverrideCents).map { max(0, $0) }
+        // Sanitized at the DECODE boundary — see `sanitizedMarginFloorOverride`.
+        marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(
+            try container.decodeIfPresent(Int.self, forKey: .marginFloorOverrideCents)
+        )
+    }
+
+    /// The margin-floor override, bounded at BOTH ends before any consumer sees it.
+    /// `DealEngine.clampToCostFloor` reads this value directly as
+    /// `maxDiscount = max(0, lineTotal - floorBasis)` where `floorBasis` is this override when
+    /// present, else the line's real cost — so each end fails a different, specific way:
+    ///
+    /// - **Below 0 -> `0`** (unchanged behavior). A negative `floorBasis` INFLATES `maxDiscount`
+    ///   above `lineTotal`, silently disabling the cost floor even with `allowBelowCost == false`
+    ///   — the opposite of what a "floor" is. `Int.min` is worse: `lineTotal - Int.min` traps on
+    ///   signed overflow the first time any line clamps against it.
+    /// - **Above `DraftValidation.maxAmountCents` -> `nil`** (the bound this was missing). The
+    ///   old clamp was LOWER-BOUND-ONLY, so a 12-digit override sailed straight through, and a
+    ///   `floorBasis` larger than any line total yields `maxDiscount == 0` on EVERY line: the
+    ///   deal exists, reads Active in Station and in the portal, and discounts nothing, forever,
+    ///   with nothing anywhere reporting a problem.
+    ///
+    /// `nil` rather than a clamp-to-ceiling is the deliberate choice, because clamping does not
+    /// fix the symptom — a $100,000 floor still exceeds every realistic line total and still
+    /// discounts nothing. An override this far out of range cannot have been authored through
+    /// `DealDraft` (`validationErrors` rejects it with `.amountTooLarge`), so it is corruption,
+    /// and the safe reading of corruption is "don't trust it": `nil` falls back to the item's
+    /// REAL cost floor, which both protects margin and lets the deal actually apply. Clamping to
+    /// `0` would be the unsafe direction — that means no floor at all.
+    ///
+    /// This is the DECODE-side twin of `DealDraft.validationErrors`'s two-bound check on
+    /// `marginFloorOverride`, sharing its ceiling so the author and the register agree on what
+    /// a plausible floor is.
+    static func sanitizedMarginFloorOverride(_ cents: Int?) -> Int? {
+        guard let cents, cents <= DraftValidation.maxAmountCents else { return nil }
+        return max(0, cents)
     }
 }
 
