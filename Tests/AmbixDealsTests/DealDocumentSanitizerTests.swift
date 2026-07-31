@@ -113,6 +113,83 @@ struct DealDocumentSanitizerTests {
         #expect(DealDocumentSanitizer.sanitizedNumber(number) === number, "value: \(value)")
     }
 
+    /// The acceptance guard this suite's sweep exists to police once gated reboxing on
+    /// `reboxed.doubleValue == fallback.doubleValue`. `NSDecimalNumber.doubleValue` does NOT
+    /// round-trip exactly — it is off by one ulp for a large class of decimals — so the guard
+    /// rejected its own correct output and handed back the raw corrupt double instead.
+    @Test("NSDecimalNumber.doubleValue is NOT an exact round-trip — never gate acceptance on it",
+          arguments: ["19.99", "2.99", "49.99", "24.99"])
+    func decimalDoubleValueDoesNotRoundTrip(_ text: String) throws {
+        let exact = try #require(Double(text))
+        #expect(NSDecimalNumber(string: text).doubleValue != exact,
+                "if this ever becomes exact, the note on decimalNumber(from:fallback:) is stale")
+        // The rebox is still correct — only the discarded acceptance test was wrong.
+        #expect(DealDocumentSanitizer.sanitizedNumber(NSNumber(value: exact))
+                == NSDecimalNumber(string: text))
+    }
+
+    /// A host may sanitize a document, CACHE the cleaned copy, and sanitize again on hydrate —
+    /// crossing this function twice. Reboxing an already-exact `NSDecimalNumber` through
+    /// `String(doubleValue)` degrades it (`19.99` -> `19.990000000000002`), so an explicit
+    /// passthrough is what makes the second crossing free.
+    @Test("sanitizing an already-sanitized value is a no-op",
+          arguments: [33.33, 9.99, 99.99, 19.99, 2.99, 49.99, 0.1, 12.5, 1.05, 66.67, 0.01])
+    func sanitizingIsIdempotent(_ value: Double) {
+        let once = DealDocumentSanitizer.sanitizedNumber(NSNumber(value: value))
+        let twice = DealDocumentSanitizer.sanitizedNumber(once)
+        #expect(twice == once, "value: \(value)")
+        #expect(twice == NSDecimalNumber(string: String(value)), "value: \(value)")
+        #expect(DealDocumentSanitizer.sanitizedNumber(twice) == once, "value: \(value)")
+    }
+
+    @Test("a whole document survives a second sanitize pass unchanged")
+    func documentSanitizeIsIdempotent() throws {
+        let once = DealDocumentSanitizer.sanitizedDocument(rawDocument(percent: 33.33), id: "d1")
+        let twice = DealDocumentSanitizer.sanitizedDocument(once, id: "d1")
+        let data = try JSONSerialization.data(withJSONObject: twice)
+        let deal = try JSONDecoder().decode(Deal.self, from: data)
+        #expect(deal.discount == .flatPercentOff(percent: Decimal(string: "33.33")!))
+    }
+
+    /// The regression net. Asserting on the decoded `Decimal` rather than on printed text is the
+    /// whole point: the two metrics disagree, and that disagreement is what hid the broken
+    /// acceptance guard — it "fixed" 99.99 while silently returning the raw corrupt double for
+    /// 2.99, 19.99, 24.99 and 49.99.
+    @Test("every two-decimal value in 0.01...100.00 decodes to its authored Decimal — zero corruption")
+    func twoDecimalSweepDecodesExactly() throws {
+        var corrupt: [String] = []
+        var naiveCorrupt = 0
+
+        for cents in 1...10_000 {
+            let text = "\(cents / 100).\(cents % 100 < 10 ? "0" : "")\(cents % 100)"
+            let authored = try #require(Decimal(string: text))
+            let value = try #require(Double(text))
+            let raw = rawDocument(percent: NSNumber(value: value))
+
+            if let deal = DealDocumentSanitizer.decodeDeal(raw, id: "d1"),
+               case let .flatPercentOff(percent) = deal.discount {
+                if percent != authored { corrupt.append(text) }
+            } else {
+                corrupt.append(text)
+            }
+
+            if let data = try? JSONSerialization.data(withJSONObject: raw),
+               let naive = try? JSONDecoder().decode(Deal.self, from: data),
+               case let .flatPercentOff(percent) = naive.discount,
+               percent != authored {
+                naiveCorrupt += 1
+            }
+        }
+
+        // `.count == 0` rather than `.isEmpty` so a regression reports a number and eight
+        // examples instead of dumping thousands of strings into the test log.
+        #expect(corrupt.count == 0,
+                "corrupt: \(corrupt.count)/10000 — first offenders: \(corrupt.prefix(8))")
+        // Canary: if the unsanitized bridge ever measures clean, this sweep has gone vacuous and
+        // is no longer protecting anything.
+        #expect(naiveCorrupt > 0, "the sweep metric measures nothing — naive corruption: \(naiveCorrupt)")
+    }
+
     @Test("a money field still lands on the exact cent it always did")
     func moneyIsUnchanged() throws {
         let raw: [String: Any] = [

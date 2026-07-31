@@ -27,14 +27,21 @@ import Foundation
 /// serializes through its own exact decimal text rather than the binary-float path a raw
 /// `NSNumber` takes.
 ///
-/// NOTE, and this is the one place this package deliberately diverges from the Station guard it
-/// was lifted from: the formatting MUST go through `String(number.doubleValue)`, NOT
+/// NOTE: the formatting MUST go through `String(number.doubleValue)`, NOT
 /// `String(describing: number)`. Those look interchangeable and are not. `String(describing:)`
 /// on an `NSNumber` dispatches to `NSNumber.description`, which formats with `%0.16g` — 16
 /// significant digits, not shortest-round-trip. That reproduces `"33.33"` correctly (the value
-/// Station's fix was verified against) but turns `99.99` into `"99.98999999999999"`, reboxing
+/// the original fix was verified against) but turns `99.99` into `"99.98999999999999"`, reboxing
 /// the corruption instead of removing it. `String` of a Swift `Double` is shortest-round-trip
-/// and gets both right; verified across every magnitude the test suite exercises.
+/// and gets both right; verified across every magnitude the test suite exercises. This was once
+/// a deliberate divergence from Station's copy of the guard; Station converged on the same
+/// formatting in `483a8ad`, so the two now agree here.
+///
+/// The remaining difference is the acceptance guard in `decimalNumber(from:fallback:)` — Station
+/// accepts any non-`NaN` rebox, this package additionally requires the decimal's own text to
+/// round-trip. That is belt-and-braces, not a wire difference: both reduce to the same output on
+/// every value either can actually be handed. See that function for what the guard must NEVER be
+/// gated on.
 ///
 /// ## What a host must still do itself
 ///
@@ -110,6 +117,13 @@ public enum DealDocumentSanitizer {
     /// its own shortest round-trip — widening a `Float` to `Double` first would inject exactly
     /// the binary noise this function exists to remove. Firestore only ever hands back `d`, but
     /// this type is the package's general-purpose host bridge, not a Firestore-only one.
+    ///
+    /// An `NSDecimalNumber` is returned UNTOUCHED, which is what makes this function idempotent.
+    /// It reports `objCType` `"d"`, so without that passthrough a second pass would read its
+    /// lossy `doubleValue` and rebox `19.99` as `19.990000000000002` — degrading a value that
+    /// was already exact. A host that sanitizes a document, caches the cleaned copy and
+    /// sanitizes again on hydrate crosses this function twice, so idempotence is a real
+    /// requirement, not a theoretical nicety.
     public static func sanitizedNumber(_ number: NSNumber) -> NSNumber {
         #if canImport(Darwin)
         // `CFGetTypeID`/`CFBooleanGetTypeID` are Darwin-only in Swift. On other platforms the
@@ -119,6 +133,11 @@ public enum DealDocumentSanitizer {
             return number
         }
         #endif
+        // Already an exact decimal — see IDEMPOTENCE above. Must precede the `objCType` switch,
+        // which would otherwise treat it as a lossy `"d"`.
+        if number is NSDecimalNumber {
+            return number
+        }
         switch String(cString: number.objCType) {
         case "d":
             let value = number.doubleValue
@@ -133,17 +152,39 @@ public enum DealDocumentSanitizer {
 
     /// `NSDecimalNumber(string:)` has no failure channel — it answers `NaN` for text it cannot
     /// parse and `0` for some it parses only partially (`"-inf"`), and a `Decimal` cannot hold a
-    /// magnitude a `Double` can (`1e300`). A `NaN` `NSDecimalNumber` is not JSON-serializable
-    /// either, so a bad rebox would take a whole document down over one field.
+    /// magnitude a `Double` can (`1e300` reboxes to `NaN`). A `NaN` `NSDecimalNumber` is not
+    /// JSON-serializable either, so a bad rebox would take a whole document down over one field.
+    /// Anything not accepted hands the original `NSNumber` straight back and lets the decode
+    /// path treat it exactly as it would have before this sanitizer existed — this function can
+    /// improve precision, never degrade it.
     ///
-    /// So: reboxing is only ever accepted when it VERIFIABLY round-trips back to the same
-    /// double. Anything else hands the original `NSNumber` straight back and lets the existing
-    /// decode path treat it exactly as it would have before this sanitizer existed — this
-    /// function can improve precision, never degrade it.
+    /// ## Why acceptance is NOT gated on `doubleValue` (the v0.1.2 fix)
+    ///
+    /// This guard used to require `reboxed.doubleValue == fallback.doubleValue`. That assumes
+    /// `NSDecimalNumber.doubleValue` round-trips exactly, and it DOES NOT — it is off by one ulp
+    /// for a large class of decimals, `19.99`, `2.99`, `24.99` and `49.99` among them (`99.99`
+    /// happens to survive, which is exactly why the original spot-check missed it). So the guard
+    /// rejected its own CORRECT output and returned the raw corrupt double instead, on 2806 of
+    /// the 10000 two-decimal values in 0.01–100.00 — a net regression versus not sanitizing at
+    /// all on the fields that have no cent-rounding step to hide it.
+    ///
+    /// The acceptance test is instead the decimal's own TEXT round-trip: does the decimal we got
+    /// back denote the same number as the text we asked it to parse? Both sides go through
+    /// `Double`'s correctly-rounded *parser* (never `NSDecimalNumber`'s lossy conversion), so it
+    /// is exact. It is also width-agnostic, which matters: comparing against `fallback` would
+    /// re-widen a `Float` to `Double` and reject every `"f"` rebox for noise that only the
+    /// widening introduced.
+    ///
+    /// Given the `isFinite` pre-filter in `sanitizedNumber`, the text check is belt-and-braces
+    /// on that path — `NaN` already catches overflow (`1e300`) and underflow (`5e-324`). It is
+    /// kept so this helper is safe in isolation rather than only in its current caller: it is
+    /// what catches a partial parse like `"-inf"` silently landing on `0`.
     private static func decimalNumber(from text: String, fallback: NSNumber) -> NSNumber {
         let reboxed = NSDecimalNumber(string: text)
         guard reboxed != NSDecimalNumber.notANumber,
-              reboxed.doubleValue == fallback.doubleValue
+              let asked = Double(text),
+              let parsed = Double(reboxed.description),
+              parsed == asked
         else { return fallback }
         return reboxed
     }
