@@ -26,13 +26,11 @@ import Foundation
 ///   explicit active flag must never silently start firing.
 /// - `channel` missing defaults to `.both` — a deal authored without a channel applies
 ///   everywhere (documented divergence from a stricter "missing = inStore only" default).
-/// - `priority`/`perCustomerLimit`/`usageLimit` missing default to `0` (0 = unlimited for the
-///   latter two, lowest priority for the former).
+/// - `perCustomerLimit`/`usageLimit` missing default to `0` (0 = unlimited).
 public struct Deal: Sendable, Equatable, Identifiable, Decodable {
     public let id: String
     public let name: String
     public let isActive: Bool
-    public let priority: Int
     public let channel: DealChannel
     public let audience: DealAudience
     public let discount: DealDiscount
@@ -52,7 +50,6 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         id: String,
         name: String,
         isActive: Bool,
-        priority: Int,
         channel: DealChannel,
         audience: DealAudience,
         discount: DealDiscount,
@@ -68,7 +65,6 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         self.id = id
         self.name = name
         self.isActive = isActive
-        self.priority = priority
         self.channel = channel
         self.audience = audience
         self.discount = discount
@@ -88,7 +84,7 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, isActive, priority, channel, audience, discount, memberDiscount,
+        case id, name, isActive, channel, audience, discount, memberDiscount,
              scope, condition, schedule, couponCode, perCustomerLimit, usageLimit,
              marginFloorOverrideCents
     }
@@ -98,7 +94,6 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         id = try container.decode(String.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
-        priority = try container.decodeIfPresent(Int.self, forKey: .priority) ?? 0
 
         // `channel`/`audience`: missing -> documented default; present-but-unrecognized ->
         // THROW (fail the whole decode). See type doc comment for the fail-hard rationale.

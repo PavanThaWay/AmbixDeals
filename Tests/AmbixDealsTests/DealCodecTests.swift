@@ -86,7 +86,7 @@ struct DealCodecTests {
     @Test("full JSON decodes every Deal field")
     func happyPathDecodesEveryField() throws {
         let json = """
-        {"id":"deal-1","name":"Tuesday Wine 15","isActive":true,"priority":5,"channel":"inStore",
+        {"id":"deal-1","name":"Tuesday Wine 15","isActive":true,"channel":"inStore",
          "audience":"any","discount":{"kind":"flatPercentOff","percent":15},
          "scope":{"type":"category","ids":["Wine"]},
          "condition":{"type":"minQuantity","value":6},
@@ -98,7 +98,6 @@ struct DealCodecTests {
         #expect(deal.id == "deal-1")
         #expect(deal.name == "Tuesday Wine 15")
         #expect(deal.isActive == true)
-        #expect(deal.priority == 5)
         #expect(deal.channel == .inStore)
         #expect(deal.audience == .any)
         #expect(deal.discount == .flatPercentOff(percent: 15))
@@ -254,12 +253,11 @@ struct DealCodecTests {
     // MARK: - Missing optional fields default
 
     @Test("""
-    missing priority/perCustomerLimit/usageLimit default to 0; missing isActive defaults false; \
+    missing perCustomerLimit/usageLimit default to 0; missing isActive defaults false; \
     missing channel defaults .both; missing audience defaults .any
     """)
     func missingOptionalFieldsDefault() throws {
         let deal = try decodeMinimalDeal()
-        #expect(deal.priority == 0)
         #expect(deal.perCustomerLimit == 0)
         #expect(deal.usageLimit == 0)
         #expect(deal.isActive == false)
@@ -305,7 +303,7 @@ struct DealCodecTests {
     @Test("the memberwise init clamps a negative marginFloorOverrideCents to 0, matching decode")
     func memberwiseInitClampsNegativeMarginFloorOverrideToZero() {
         let deal = Deal(
-            id: "deal-x", name: "Direct construction", isActive: true, priority: 0,
+            id: "deal-x", name: "Direct construction", isActive: true,
             channel: .both, audience: .any, discount: .flatPercentOff(percent: 10),
             memberDiscount: nil, scope: .all, condition: .always, schedule: nil,
             couponCode: nil, perCustomerLimit: 0, usageLimit: 0,

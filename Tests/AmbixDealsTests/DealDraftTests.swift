@@ -174,7 +174,6 @@ struct DealDraftTests {
         var draft = DealDraft(id: "deal-lockstep-\(testCase.label)")
         draft.name = "  Tuesday Wine 15  "
         draft.isActive = true
-        draft.priority = 5
         draft.channel = .inStore
         draft.audience = .member
         draft.discount = testCase.discount
@@ -200,7 +199,6 @@ struct DealDraftTests {
         #expect(deal.id == draft.id, "kind: \(testCase.label)")
         #expect(deal.name == "Tuesday Wine 15", "kind: \(testCase.label)")
         #expect(deal.isActive == true, "kind: \(testCase.label)")
-        #expect(deal.priority == 5, "kind: \(testCase.label)")
         #expect(deal.channel == .inStore, "kind: \(testCase.label)")
         #expect(deal.audience == .member, "kind: \(testCase.label)")
         #expect(deal.discount == testCase.expected, "kind: \(testCase.label)")
@@ -546,7 +544,6 @@ struct DealDraftTests {
             id: "deal-seed-a",
             name: "Seed A",
             isActive: false,
-            priority: 7,
             channel: .online,
             audience: .wholesale,
             discount: .flatPercentOff(percent: 25),
@@ -577,7 +574,6 @@ struct DealDraftTests {
             id: "deal-seed-b",
             name: "Seed B",
             isActive: true,
-            priority: 0,
             channel: .both,
             audience: .any,
             discount: .tieredQty(tiers: [
@@ -607,7 +603,6 @@ struct DealDraftTests {
             id: "deal-seed-c",
             name: "Seed C",
             isActive: true,
-            priority: 2,
             channel: .inStore,
             audience: .member,
             discount: .bundle(
@@ -637,7 +632,6 @@ struct DealDraftTests {
             id: "deal-seed-d",
             name: "Seed D",
             isActive: false,
-            priority: 1,
             channel: .online,
             audience: .senior,
             discount: .unlockBonusProduct(productId: "sku-reward", quantity: 2),
@@ -674,7 +668,6 @@ struct DealDraftTests {
             id: "deal-seed-e",
             name: "Seed E",
             isActive: true,
-            priority: 0,
             channel: .both,
             audience: .member,
             discount: .flatPercentOff(percent: 10),
@@ -834,7 +827,7 @@ struct DealDraftTests {
         draft.marginFloorOverride = Money(cents: 100)
 
         let expected: Set<String> = [
-            "id", "name", "isActive", "priority", "channel", "audience", "discount", "scope",
+            "id", "name", "isActive", "channel", "audience", "discount", "scope",
             "condition", "perCustomerLimit", "usageLimit", "schedule", "couponCode",
             "marginFloorOverrideCents",
         ]
@@ -1007,7 +1000,6 @@ struct DealDraftTests {
             id: "deal-unsupported",
             name: "Legacy Gift Card Promo",
             isActive: true,
-            priority: 0,
             channel: .both,
             audience: .any,
             discount: .unsupported(kind: "giftCardTopUp"),

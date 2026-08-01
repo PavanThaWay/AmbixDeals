@@ -13,12 +13,18 @@ struct DealDocumentSanitizerTests {
 
     /// What a Firestore snapshot dictionary for a percent-off deal actually looks like in
     /// memory: numbers as `NSNumber`, booleans as `CFBoolean`-backed `NSNumber`.
+    ///
+    /// `perCustomerLimit` is the INTEGER CONTROL: an integer-`objCType` `NSNumber` sitting in the
+    /// same document as the fractional `percent`, so the sanitize walk has to pass one through
+    /// untouched while reboxing the other. It carried on `priority` until that field was removed
+    /// from the wire contract; the control moved rather than being dropped, because the walk
+    /// treating every `NSNumber` alike is a real defect this suite exists to catch.
     private func rawDocument(percent: NSNumber) -> [String: Any] {
         [
             "id": "stale-id",
             "name": "Third Off",
             "isActive": NSNumber(value: true),
-            "priority": NSNumber(value: 5),
+            "perCustomerLimit": NSNumber(value: 5),
             "discount": ["kind": "flatPercentOff", "percent": percent] as [String: Any],
             "scope": ["type": "all"] as [String: Any],
         ]
@@ -149,6 +155,8 @@ struct DealDocumentSanitizerTests {
         let data = try JSONSerialization.data(withJSONObject: twice)
         let deal = try JSONDecoder().decode(Deal.self, from: data)
         #expect(deal.discount == .flatPercentOff(percent: Decimal(string: "33.33")!))
+        // The integer control (see `rawDocument`): two passes must leave it an exact integer.
+        #expect(deal.perCustomerLimit == 5)
     }
 
     /// The regression net. Asserting on the decoded `Decimal` rather than on printed text is the

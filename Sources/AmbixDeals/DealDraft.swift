@@ -57,7 +57,6 @@ public struct DealDraft: Sendable, Equatable {
     public var id: String
     public var name: String = ""
     public var isActive: Bool = true
-    public var priority: Int = 0
     public var channel: DealChannel = .inStore
     public var audience: DealAudience = .any
     public var discount: DraftDiscount = .flatPercentOff(percent: "")
@@ -93,7 +92,6 @@ public struct DealDraft: Sendable, Equatable {
         id = deal.id
         name = deal.name
         isActive = deal.isActive
-        priority = deal.priority
         channel = deal.channel
         audience = deal.audience
         discount = seededDiscount
@@ -177,7 +175,6 @@ public struct DealDraft: Sendable, Equatable {
             "id": .string(id),
             "name": .string(name.trimmingCharacters(in: .whitespacesAndNewlines)),
             "isActive": .bool(isActive),
-            "priority": .int(priority),
             "channel": .string(channel.rawValue),
             "audience": .string(audience.rawValue),
             "discount": .map(discount.wireFields() ?? [:]),
