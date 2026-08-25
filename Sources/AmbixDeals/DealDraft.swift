@@ -71,6 +71,10 @@ public struct DealDraft: Sendable, Equatable {
     public var perCustomerLimit: Int = 0
     public var usageLimit: Int = 0
     public var marginFloorOverride: Money? = nil
+    /// Whether this deal advertises itself on receipts at all. OFF is the default and the
+    /// safe state, and switching it off CLEARS the stored config — see `mirrorWrite()`.
+    public var printEnabled: Bool = false
+    public var print: DraftPrint = .init()
 
     public init(id: String) {
         self.id = id
@@ -114,6 +118,13 @@ public struct DealDraft: Sendable, Equatable {
         perCustomerLimit = deal.perCustomerLimit
         usageLimit = deal.usageLimit
         marginFloorOverride = deal.marginFloorOverrideCents.map { Money(cents: $0) }
+        if let dealPrint = deal.print {
+            printEnabled = true
+            print = DraftPrint(dealPrint)
+        } else {
+            printEnabled = false
+            print = DraftPrint()
+        }
     }
 
     /// One case per Global-Constraints validation rule that currently fails. Empty means
@@ -129,6 +140,9 @@ public struct DealDraft: Sendable, Equatable {
         errors.append(contentsOf: condition.validationErrors())
         if scheduleEnabled {
             errors.append(contentsOf: schedule.validationErrors())
+        }
+        if printEnabled {
+            errors.append(contentsOf: print.validationErrors(couponCode: couponCode))
         }
         if perCustomerLimit < 0 { errors.append(.perCustomerLimitNegative) }
         if usageLimit < 0 { errors.append(.usageLimitNegative) }
@@ -192,6 +206,13 @@ public struct DealDraft: Sendable, Equatable {
             // a preserved stale override is below-cost selling the manager believes they
             // turned off.
             "marginFloorOverrideCents": marginFloorOverride.map { .int($0.cents) } ?? .null,
+            // Switching printing OFF clears the whole stored map, exactly like `schedule`
+            // above and for exactly the same reason: a nested-map merge would leave the old
+            // headline, terms and trigger sitting in the doc, and the deal would carry on
+            // advertising itself on paper after the manager turned it off. That is the one
+            // failure mode a receipt feature cannot have — the manager reads the switch,
+            // the customer reads the coupon, and only one of them would be right.
+            "print": printEnabled ? .map(print.wireFields() ?? [:]) : .null,
         ]
         return MirrorWrite(collection: "deals", documentID: id, fields: fields)
     }
@@ -671,6 +692,168 @@ public struct DraftSchedule: Sendable, Equatable {
         if dayStartMinute >= dayEndMinute { errors.append(.scheduleWindowInvalid) }
         if let startDate, let endDate, endDate <= startDate { errors.append(.scheduleDateRangeInvalid) }
         return errors
+    }
+}
+
+// MARK: - DraftPrint
+
+/// The authoring side of `DealPrint` — what a manager fills in under the coupon-code field.
+///
+/// Mirrors `DealPrint` field-for-field, with the house string-buffer treatment on the one
+/// user-typed number (`saleOver`'s dollars) so a half-typed "30." can be held in the UI.
+/// `priority` stays a plain `Int` because it is stepper-backed, like `perCustomerLimit` and
+/// `usageLimit`.
+///
+/// ## Why validation here is stricter than `DealPrint`'s decode
+///
+/// `DealPrint` decodes tolerantly — `headline` is `String?` and a `nil` simply means the
+/// deal does not print. That is right for the register, which must never crash on a
+/// half-written doc. It is wrong for an editor: a manager who switches printing ON and
+/// leaves the offer line blank has authored a deal that silently prints nothing, and would
+/// have no way to discover it short of ringing a sale.
+///
+/// So the two fail-closed rules `CouponSelector` applies at print time are surfaced here as
+/// SAVE-BLOCKING errors instead — a non-empty headline, and a coupon code to scan back.
+/// Same rules, moved to where a person can still act on them.
+public struct DraftPrint: Sendable, Equatable {
+    public var trigger: DraftPrintTrigger = .always
+    /// Higher wins when more deals match than the receipt's cap allows. Negative is
+    /// meaningful (it ranks BELOW an un-prioritized deal) and therefore not an error —
+    /// unlike a negative usage limit, which is nonsense.
+    public var priority: Int = 0
+    public var headline: String = ""
+    public var terms: String = ""
+
+    public init() {}
+
+    /// Seeds for edit. Both text fields round-trip RAW, normalized only at `wireFields()`
+    /// time — the same reason `couponCode` gives.
+    init(_ print: DealPrint) {
+        trigger = DraftPrintTrigger(print.trigger)
+        priority = print.priority
+        headline = print.headline ?? ""
+        terms = print.terms ?? ""
+    }
+
+    /// `{"trigger", "priority", "headline", "terms"}` against `DealPrint.CodingKeys`.
+    ///
+    /// Naturally COMPLETE over that vocabulary — all four keys are emitted on every save,
+    /// with `.textOrNull` carrying a cleared line to the wire as an explicit null rather
+    /// than an omission. `terms` is the field that makes this matter: removing the small
+    /// print from a deal that had some must actually remove it, and a nested map merges key
+    /// by key under `setData(merge: true)`.
+    ///
+    /// `nil` when the trigger's own buffer doesn't parse — the same check
+    /// `validationErrors` uses, so a `nil` here can only happen when `canSave` is already
+    /// false.
+    func wireFields() -> [String: FirestoreValue]? {
+        guard let triggerFields = trigger.wireFields() else { return nil }
+        return [
+            "trigger": .map(triggerFields),
+            "priority": .int(priority),
+            "headline": .textOrNull(headline.trimmingCharacters(in: .whitespacesAndNewlines)),
+            "terms": .textOrNull(terms.trimmingCharacters(in: .whitespacesAndNewlines)),
+        ]
+    }
+
+    /// Only ever called by `DealDraft.validationErrors` when `printEnabled`.
+    ///
+    /// - Parameter couponCode: the parent draft's raw buffer. A printed coupon with no code
+    ///   leaves a cashier arbitrating an offer the register cannot see, so the editor
+    ///   refuses to save one — `CouponSelector.canAdvertise`'s rule, brought forward.
+    func validationErrors(couponCode: String) -> [DraftError] {
+        var errors: [DraftError] = []
+        if headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errors.append(.printHeadlineRequired)
+        }
+        if couponCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            errors.append(.printNeedsCouponCode)
+        }
+        errors.append(contentsOf: trigger.validationErrors())
+        return errors
+    }
+}
+
+// MARK: - DraftPrintTrigger
+
+/// Mirrors `DealPrintTrigger`, with `saleOver`'s dollars string-buffered.
+public enum DraftPrintTrigger: Sendable, Equatable {
+    case always
+    case basketHasCategory(names: Set<String>)
+    case basketHasProduct(ids: Set<String>)
+    case saleOver(String)
+
+    /// Every payload key `DealPrintTrigger.CodingKeys` knows EXCEPT the `type`
+    /// discriminator — the complete vocabulary a stored `trigger` map may be holding.
+    private static let payloadKeys = ["names", "ids", "amount"]
+
+    /// `{"type": ..., payload}` against `DealPrintTrigger.init(from:)`, padded with `.null`
+    /// for the keys this shape doesn't use.
+    ///
+    /// The padding is what makes switching trigger shapes honest: a nested map merges key by
+    /// key, so narrowing "over $30" to "always" would otherwise strand `amount: 30` inside
+    /// the stored map. Station's decode is discriminator-driven and would ignore it, but the
+    /// AmbixServer projector stores this whole object as `deals.payload` and both the Portal
+    /// and Daisho read it — the same reasoning `DraftDiscount.completed(_:)` gives at length.
+    func wireFields() -> [String: FirestoreValue]? {
+        guard let payload = triggerPayload() else { return nil }
+        var fields = payload
+        for key in Self.payloadKeys where fields[key] == nil {
+            fields[key] = .null
+        }
+        return fields
+    }
+
+    private func triggerPayload() -> [String: FirestoreValue]? {
+        switch self {
+        case .always:
+            return ["type": .string("always")]
+        case .basketHasCategory(let names):
+            let list = DraftValidation.wireIdList(names)
+            guard !list.isEmpty else { return nil }
+            return ["type": .string("basketHasCategory"), "names": .array(list.map { .string($0) })]
+        case .basketHasProduct(let ids):
+            let list = DraftValidation.wireIdList(ids)
+            guard !list.isEmpty else { return nil }
+            return ["type": .string("basketHasProduct"), "ids": .array(list.map { .string($0) })]
+        case .saleOver(let raw):
+            guard let value = DraftValidation.positiveDecimal(raw) else { return nil }
+            return ["type": .string("saleOver"), "amount": moneyWireValue(value)]
+        }
+    }
+
+    /// Bounds checked against the NORMALIZED list `wireFields()` will emit, not the raw
+    /// `Set` — `DraftScope.validationErrors()`'s reasoning, for the same reason: a trigger
+    /// holding nothing but whitespace passes a naive count and then fires on no basket.
+    func validationErrors() -> [DraftError] {
+        switch self {
+        case .always:
+            return []
+        case .basketHasCategory(let names):
+            return DraftValidation.wireIdList(names).isEmpty ? [.printTriggerCategoriesEmpty] : []
+        case .basketHasProduct(let ids):
+            return DraftValidation.wireIdList(ids).isEmpty ? [.printTriggerProductsEmpty] : []
+        case .saleOver(let raw):
+            guard DraftValidation.positiveDecimal(raw) != nil else {
+                return [DraftValidation.amountError(raw, otherwise: .printTriggerAmountInvalid) ?? .printTriggerAmountInvalid]
+            }
+            return []
+        }
+    }
+}
+
+extension DraftPrintTrigger {
+    init(_ trigger: DealPrintTrigger) {
+        switch trigger {
+        case .always:
+            self = .always
+        case .basketHasCategory(let names):
+            self = .basketHasCategory(names: names)
+        case .basketHasProduct(let ids):
+            self = .basketHasProduct(ids: ids)
+        case .saleOver(let amount):
+            self = .saleOver((Decimal(amount.cents) / Decimal(100)).description)
+        }
     }
 }
 
