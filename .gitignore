@@ -2,3 +2,6 @@
 .swiftpm/
 *.xcodeproj
 .DS_Store
+
+# Local git worktrees — never part of a commit.
+.worktrees/
