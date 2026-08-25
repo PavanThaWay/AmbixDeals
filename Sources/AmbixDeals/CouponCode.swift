@@ -24,11 +24,19 @@ import Foundation
 ///
 /// **ASCII is load-bearing, not decorative.** Swift's `isNumber` is true for every Unicode
 /// number — `½`, the Arabic-Indic digits, the Roman numeral forms — and an earlier version
-/// of this filter admitted them by testing `isNumber` without `isASCII`. Those characters
-/// then reached `GS k 73`, whose length byte counts BYTES while the string was measured in
-/// CHARACTERS, so a single `½` produced a barcode with a wrong length prefix and a garbled
-/// payload. That is worse than the stripping it sits beside: not a code that fails to
-/// match, but a byte stream the printer cannot parse.
+/// of this filter admitted them by testing `isNumber` without `isASCII`.
+///
+/// Those characters then reached `GS k 73` as raw UTF-8. Code128 **code set B encodes
+/// ASCII 32–126 and nothing else**, so a byte like `0xC2` has no symbol in it: the printer
+/// is handed a well-framed command whose payload it cannot render, and prints a malformed
+/// barcode or none at all. That is worse than the stripping it sits beside — not a code
+/// that fails to match, but one that never becomes bars.
+///
+/// (The length prefix itself is fine, and an earlier draft of this comment claimed
+/// otherwise. `barcodeCode128` takes `UInt8(data.count)` from the BYTE array it is handed,
+/// so multi-byte characters are counted correctly. The one length hazard is real but
+/// separate: that initialiser traps above 255, and non-ASCII inflation reaches 255 bytes
+/// in fewer characters than a plain code would.)
 public enum CouponCode {
 
     /// Whether one character survives the journey to paper unchanged.
