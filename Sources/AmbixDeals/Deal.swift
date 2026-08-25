@@ -45,6 +45,9 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
     /// `0` = unlimited.
     public let usageLimit: Int
     public let marginFloorOverrideCents: Int?
+    /// Whether this deal advertises itself on a receipt. `nil` = never printed, which is
+    /// what every deal authored before v0.3.0 decodes to.
+    public let print: DealPrint?
 
     public init(
         id: String,
@@ -60,7 +63,12 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         couponCode: String?,
         perCustomerLimit: Int,
         usageLimit: Int,
-        marginFloorOverrideCents: Int?
+        marginFloorOverrideCents: Int?,
+        // DEFAULTED, unlike every other parameter here, and deliberately: it makes the
+        // v0.3.0 addition source-COMPATIBLE, so Station and Daisho repin on their own
+        // schedule with no atomic fleet update — the same property the v0.2.0 `priority`
+        // removal was careful to preserve.
+        print: DealPrint? = nil
     ) {
         self.id = id
         self.name = name
@@ -81,12 +89,13 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         // carrying a raw negative override, which the decode-path comment's "every consumer
         // downstream can trust the invariant" claim did not actually hold until now.
         self.marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(marginFloorOverrideCents)
+        self.print = print
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, isActive, channel, audience, discount, memberDiscount,
              scope, condition, schedule, couponCode, perCustomerLimit, usageLimit,
-             marginFloorOverrideCents
+             marginFloorOverrideCents, print
     }
 
     public init(from decoder: Decoder) throws {
@@ -136,6 +145,17 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(
             try container.decodeIfPresent(Int.self, forKey: .marginFloorOverrideCents)
         )
+        // `try?` — the same swallow `scope`/`condition`/`schedule` use above, and it is
+        // what makes the whole print config fail CLOSED to `nil` on every malformed shape:
+        // a missing trigger, an unrecognized trigger type, a wrong-typed field, a required
+        // sub-field absent. `DealPrint`'s own decode throws normally; the DIRECTION of the
+        // failure is decided here, exactly as `scope`'s doc comment describes.
+        //
+        // Closed rather than open because the failure lands in a customer's hand. `scope`
+        // fails closed so garbage can never silently become a storewide discount; garbage
+        // must not silently become an offer on paper either. A deal whose advertising is
+        // broken still PRICES correctly — only its coupon stops printing.
+        print = (try? container.decodeIfPresent(DealPrint.self, forKey: .print)) ?? nil
     }
 
     /// The margin-floor override, bounded at BOTH ends before any consumer sees it.
