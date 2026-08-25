@@ -58,6 +58,14 @@ public enum DraftError: Equatable, Sendable {
     case printTriggerCategoriesEmpty
     case printTriggerProductsEmpty
     case printTriggerAmountInvalid
+    /// Printing is ON with a coupon code a barcode cannot carry unchanged.
+    ///
+    /// Scoped to printing on purpose: a code like `20%OFF` works perfectly well when it is
+    /// only ever typed at the register — `enteredCodes` records the raw text — so
+    /// rejecting it outright would break deals that are fine today. It is only broken by
+    /// being PRINTED, where the barcode carries a stripped string the register never
+    /// matches.
+    case printCouponCodeNotScannable([String])
 
     public var message: String {
         switch self {
@@ -113,6 +121,12 @@ public enum DraftError: Equatable, Sendable {
             return "Pick at least one product for the receipt trigger."
         case .printTriggerAmountInvalid:
             return "Sale total must be greater than $0."
+        case .printCouponCodeNotScannable(let offenders):
+            // Names the characters, because "invalid code" leaves a manager staring at a
+            // field they cannot see anything wrong with — a space is the common case.
+            let list = offenders.joined(separator: " ")
+            return "Coupon code can only use letters, numbers and dashes to print as a "
+                + "scannable barcode. Remove: \(list)"
         case .marginFloorOverrideNegative:
             return "Margin floor override can't be negative."
         }

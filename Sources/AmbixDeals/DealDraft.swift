@@ -768,6 +768,10 @@ public struct DraftPrint: Sendable, Equatable {
         }
         if couponCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             errors.append(.printNeedsCouponCode)
+        } else if !CouponCode.isRedeemableWhenPrinted(couponCode) {
+            // Only reachable once a code EXISTS — reporting "remove these characters"
+            // beside "add a code" would be two instructions about one empty field.
+            errors.append(.printCouponCodeNotScannable(CouponCode.unscannableCharacters(couponCode)))
         }
         errors.append(contentsOf: trigger.validationErrors())
         return errors
