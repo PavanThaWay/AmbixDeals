@@ -830,6 +830,11 @@ struct DealDraftTests {
             "id", "name", "isActive", "channel", "audience", "discount", "scope",
             "condition", "perCustomerLimit", "usageLimit", "schedule", "couponCode",
             "marginFloorOverrideCents",
+            // Added in 0.4.0. Its presence here is the DECISION, not a consequence of one:
+            // by listing `print` the Studio claims ownership of the key, which is what
+            // licenses `mirrorWrite()` to null it when the manager switches printing off.
+            // An owned key may be cleared; an unowned one may only be left alone.
+            "print",
         ]
         #expect(Set(draft.mirrorWrite().fields.keys) == expected)
 

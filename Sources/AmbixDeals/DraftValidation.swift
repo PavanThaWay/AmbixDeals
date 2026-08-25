@@ -48,6 +48,16 @@ public enum DraftError: Equatable, Sendable {
     case perCustomerLimitNegative
     case usageLimitNegative
     case marginFloorOverrideNegative
+    /// Printing is ON with no offer line. `DealPrint.headline == nil` means "does not
+    /// print", so saving this would produce a deal the manager believes advertises itself
+    /// and which silently never does.
+    case printHeadlineRequired
+    /// Printing is ON with no coupon code. `CouponSelector` refuses to advertise a deal
+    /// with nothing to scan back; this is that rule where the manager can still act on it.
+    case printNeedsCouponCode
+    case printTriggerCategoriesEmpty
+    case printTriggerProductsEmpty
+    case printTriggerAmountInvalid
 
     public var message: String {
         switch self {
@@ -93,6 +103,16 @@ public enum DraftError: Equatable, Sendable {
             return "Per-customer limit can't be negative."
         case .usageLimitNegative:
             return "Usage limit can't be negative."
+        case .printHeadlineRequired:
+            return "Add the offer line customers will read, or turn off receipt printing."
+        case .printNeedsCouponCode:
+            return "A coupon code is required to print this deal on receipts."
+        case .printTriggerCategoriesEmpty:
+            return "Pick at least one category for the receipt trigger."
+        case .printTriggerProductsEmpty:
+            return "Pick at least one product for the receipt trigger."
+        case .printTriggerAmountInvalid:
+            return "Sale total must be greater than $0."
         case .marginFloorOverrideNegative:
             return "Margin floor override can't be negative."
         }
