@@ -15,9 +15,11 @@ private func input(audience: DealAudience = .any,
                    condition: DealCondition = .always,
                    schedule: DealSchedule? = nil,
                    channel: DealChannel = .both,
-                   perCustomerLimit: Int = 0) -> CouponTermsInput {
+                   perCustomerLimit: Int = 0,
+                   discountKind: CouponTermsDiscountKind = .standard) -> CouponTermsInput {
     CouponTermsInput(audience: audience, scope: scope, condition: condition,
-                     schedule: schedule, channel: channel, perCustomerLimit: perCustomerLimit)
+                     schedule: schedule, channel: channel, perCustomerLimit: perCustomerLimit,
+                     discountKind: discountKind)
 }
 
 private func schedule(mask: Int = 127, start: Int = 0, end: Int = 1_440) -> DealSchedule {
@@ -39,13 +41,15 @@ func openScheduleDerivesNothing() {
 
 // MARK: - Single clauses, pinned
 
-@Test("audience clauses print as authored, including the O-2a aliased tiers",
+@Test("audience clauses print the ENFORCED predicate — O-2a tiers say Members, not their label",
       arguments: [
           (DealAudience.member, "Members only."),
           (.employee, "Employees only."),
           (.wholesale, "Wholesale only."),
-          (.senior, "Seniors only."),
-          (.military, "Military only."),
+          // The register's audience gate aliases both to isMember (O-2a). "Seniors
+          // only." would invite a senior non-member into a refusal at the till.
+          (.senior, "Members only."),
+          (.military, "Members only."),
       ] as [(DealAudience, String)])
 func audienceClause(_ audience: DealAudience, _ expected: String) {
     #expect(CouponTerms.clauses(input(audience: audience)) == [expected])
@@ -70,9 +74,47 @@ func productsScopeClause() {
         == ["Valid on select items only."])
 }
 
-@Test("an empty category list derives no clause rather than 'Valid on  only.'")
-func emptyCategoryScopeIsSilent() {
-    #expect(CouponTerms.clauses(input(scope: .category(names: []))) == [])
+@Test("an empty category list hedges like an empty products scope — it matches nothing at the register")
+func emptyCategoryScopeHedges() {
+    #expect(CouponTerms.clauses(input(scope: .category(names: [])))
+        == ["Valid on select items only."])
+}
+
+// MARK: - Clauses the register would not enforce are silenced by kind
+
+@Test("mixedCase silences the condition clause — the tier list IS the threshold logic")
+func mixedCaseSilencesCondition() {
+    #expect(CouponTerms.clauses(input(condition: .minQuantity(24), discountKind: .mixedCase)) == [])
+    // Scope IS consulted for mixedCase (it selects the lines), so that clause stays.
+    #expect(CouponTerms.clauses(input(scope: .category(names: ["Wine"]), discountKind: .mixedCase))
+        == ["Valid on Wine only."])
+}
+
+@Test("bundle silences the scope clause — only components define membership")
+func bundleSilencesScope() {
+    #expect(CouponTerms.clauses(input(scope: .category(names: ["Wine"]), discountKind: .bundle)) == [])
+    // Condition IS gated for bundle (against the component subset), so it stays.
+    #expect(CouponTerms.clauses(input(condition: .minSubtotal(Money(cents: 3_000)), discountKind: .bundle))
+        == ["Min. purchase $30."])
+}
+
+@Test("unlockBonusProduct silences both — its payload's productId is the sole selector")
+func unlockBonusSilencesBoth() {
+    #expect(CouponTerms.clauses(input(scope: .category(names: ["Wine"]),
+                                      condition: .minSubtotal(Money(cents: 3_000)),
+                                      discountKind: .unlockBonusProduct)) == [])
+}
+
+@Test("the kind maps from the discount payload on both the deal and the draft side")
+func kindMapping() {
+    #expect(CouponTermsDiscountKind(DealDiscount.mixedCase(tiers: [])) == .mixedCase)
+    #expect(CouponTermsDiscountKind(DealDiscount.bundle(components: [], bundlePrice: .zero)) == .bundle)
+    #expect(CouponTermsDiscountKind(DealDiscount.unlockBonusProduct(productId: "p", quantity: 1)) == .unlockBonusProduct)
+    #expect(CouponTermsDiscountKind(DealDiscount.flatAmountOff(amount: .zero)) == .standard)
+    var draft = DealDraft(id: "d-kind")
+    draft.discount = .mixedCase(tiers: [])
+    draft.condition = .minQuantity("24")
+    #expect(CouponTerms.clauses(draft.couponTermsInput) == [])
 }
 
 @Test("minimum-quantity condition prints from 2 up; 1 and below is 'always' in practice")
@@ -256,6 +298,7 @@ private let goldens: [(String, CouponTermsInput, String, String)] = [
     ("unrestricted", input(), "", ""),
     ("note-only", input(), "One per visit.", "One per visit."),
     ("member", input(audience: .member), "", "Members only."),
+    ("senior-prints-member", input(audience: .senior), "", "Members only."),
     ("category-pair", input(scope: .category(names: ["Beer", "Wine"])), "",
      "Valid on Beer & Wine only."),
     ("select-items", input(scope: .products(ids: ["sku-1"])), "",
@@ -273,6 +316,17 @@ private let goldens: [(String, CouponTermsInput, String, String)] = [
     ("online-only", input(channel: .online), "", "Online only."),
     ("in-store-is-silent", input(channel: .inStore), "", ""),
     ("limit-one", input(perCustomerLimit: 1), "", "Limit 1 per customer."),
+    ("empty-category-hedge", input(scope: .category(names: [])), "",
+     "Valid on select items only."),
+    ("mixed-case-condition-silenced",
+     input(scope: .category(names: ["Wine"]), condition: .minQuantity(24), discountKind: .mixedCase),
+     "", "Valid on Wine only."),
+    ("bundle-scope-silenced",
+     input(scope: .category(names: ["Wine"]), perCustomerLimit: 1, discountKind: .bundle),
+     "", "Limit 1 per customer."),
+    ("unlock-bonus-silences-both",
+     input(scope: .category(names: ["Wine"]), condition: .minSubtotal(Money(cents: 3_000)), discountKind: .unlockBonusProduct),
+     "", ""),
     ("everything", input(audience: .member,
                          scope: .category(names: ["Wine"]),
                          condition: .minSubtotal(Money(cents: 3_000)),

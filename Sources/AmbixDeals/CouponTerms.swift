@@ -2,6 +2,53 @@ import Foundation
 
 // MARK: - CouponTermsInput
 
+/// Which enforcement sites a deal's discount kind actually has — the composer consults
+/// this so a clause never prints for a predicate the register ignores for that kind.
+///
+/// The engine's own parity pins are the authority here (`DealEngine.swift`):
+/// - `mixedCase`: "`offer.condition` is NEVER consulted — the tier list IS the threshold
+///   logic (parity pin, not an oversight)". Scope IS consulted (it selects the lines).
+/// - `unlockBonusProduct`: condition never consulted, and "`deal.scope` is NOT consulted
+///   here either" — the payload's own `productId` is the sole selector.
+/// - `bundle`: "does NOT consult scope at all — only `components` define membership.
+///   `offer.condition` IS gated" — so the condition clause stays, the scope clause goes.
+/// - everything else consults both.
+public enum CouponTermsDiscountKind: Sendable, Equatable {
+    case standard, mixedCase, bundle, unlockBonusProduct
+
+    public init(_ discount: DealDiscount) {
+        switch discount {
+        case .mixedCase: self = .mixedCase
+        case .bundle: self = .bundle
+        case .unlockBonusProduct: self = .unlockBonusProduct
+        default: self = .standard
+        }
+    }
+
+    init(_ draft: DraftDiscount) {
+        switch draft {
+        case .mixedCase: self = .mixedCase
+        case .bundle: self = .bundle
+        case .unlockBonusProduct: self = .unlockBonusProduct
+        default: self = .standard
+        }
+    }
+
+    var consultsCondition: Bool {
+        switch self {
+        case .mixedCase, .unlockBonusProduct: return false
+        case .standard, .bundle: return true
+        }
+    }
+
+    var consultsScope: Bool {
+        switch self {
+        case .bundle, .unlockBonusProduct: return false
+        case .standard, .mixedCase: return true
+        }
+    }
+}
+
 /// The enforced facts a printed coupon's small print is derived from — exactly the fields
 /// `DealEngine` and the pricing path actually consult at redemption, nothing else.
 ///
@@ -9,7 +56,9 @@ import Foundation
 /// enforce: to print a new promise, the value it derives from has to be added HERE, and
 /// this struct only admits fields with an enforcement site behind them. `usageLimit` is
 /// deliberately absent — a store-wide redemption cap is an operational budget, not a
-/// promise made to the customer holding this one coupon.
+/// promise made to the customer holding this one coupon. `discountKind` is not a clause
+/// source; it tells the composer which of the other fields the register will actually
+/// consult for this deal, so a clause with no enforcement site is silenced.
 public struct CouponTermsInput: Sendable, Equatable {
     public let audience: DealAudience
     public let scope: DealScope
@@ -17,19 +66,22 @@ public struct CouponTermsInput: Sendable, Equatable {
     public let schedule: DealSchedule?
     public let channel: DealChannel
     public let perCustomerLimit: Int
+    public let discountKind: CouponTermsDiscountKind
 
     public init(audience: DealAudience,
                 scope: DealScope,
                 condition: DealCondition,
                 schedule: DealSchedule?,
                 channel: DealChannel,
-                perCustomerLimit: Int) {
+                perCustomerLimit: Int,
+                discountKind: CouponTermsDiscountKind) {
         self.audience = audience
         self.scope = scope
         self.condition = condition
         self.schedule = schedule
         self.channel = channel
         self.perCustomerLimit = perCustomerLimit
+        self.discountKind = discountKind
     }
 }
 
@@ -60,9 +112,9 @@ public struct CouponTermsInput: Sendable, Equatable {
 ///
 /// - `.products` scope prints "select items" — the wire carries product IDS, and naming
 ///   them would need a catalog the print path deliberately does not take.
-/// - `senior`/`military` print as authored even though the engine's O-2a aliasing enforces
-///   them at member level: paper stricter than the register never sends a customer into a
-///   refusal, and it is what the owner wrote.
+/// - `senior`/`military` print "Members only." — the O-2a aliasing means the register
+///   enforces membership, and the authored tier is an overlapping set, not a stricter
+///   one: "Seniors only." would invite a senior non-member into a refusal.
 /// - `minQuantity(1)` and below produce no clause — a sale has an item by definition.
 /// - Dates never appear; the EXPIRY line owns the end date and printing it twice invites
 ///   the two to disagree.
@@ -72,8 +124,8 @@ public enum CouponTerms {
     public static func clauses(_ input: CouponTermsInput) -> [String] {
         var out: [String] = []
         if let audience = audienceClause(input.audience) { out.append(audience) }
-        if let scope = scopeClause(input.scope) { out.append(scope) }
-        if let condition = conditionClause(input.condition) { out.append(condition) }
+        if input.discountKind.consultsScope, let scope = scopeClause(input.scope) { out.append(scope) }
+        if input.discountKind.consultsCondition, let condition = conditionClause(input.condition) { out.append(condition) }
         if let schedule = input.schedule, let window = scheduleClause(schedule) { out.append(window) }
         if let channel = channelClause(input.channel) { out.append(channel) }
         if input.perCustomerLimit > 0 {
@@ -101,19 +153,25 @@ public enum CouponTerms {
                          condition: deal.condition,
                          schedule: deal.schedule,
                          channel: deal.channel,
-                         perCustomerLimit: deal.perCustomerLimit)
+                         perCustomerLimit: deal.perCustomerLimit,
+                         discountKind: CouponTermsDiscountKind(deal.discount))
     }
 
     // MARK: - Clauses
 
+    /// `senior`/`military` print "Members only." — the predicate the register actually
+    /// checks (O-2a: both alias to `isMember` at `DealEngine`'s audience gate). Printing
+    /// the authored tier read as safe-but-stricter, and it is not: "a senior" and "a
+    /// member" are overlapping sets, not nested ones, so "Seniors only." invites a senior
+    /// NON-member to the till where the register refuses them. The paper states what is
+    /// enforced; the EDITOR is where the owner learns the tier counts any member (the
+    /// Gates card's own caption already says so).
     private static func audienceClause(_ audience: DealAudience) -> String? {
         switch audience {
         case .any: return nil
-        case .member: return "Members only."
+        case .member, .senior, .military: return "Members only."
         case .employee: return "Employees only."
         case .wholesale: return "Wholesale only."
-        case .senior: return "Seniors only."
-        case .military: return "Military only."
         }
     }
 
@@ -122,7 +180,11 @@ public enum CouponTerms {
         case .all:
             return nil
         case .category(let names):
-            guard !names.isEmpty else { return nil }
+            // Empty is reachable on the wire ({type:"category", ids:[]}) and matches no
+            // line at the register — same hedge as an empty products scope, because
+            // silence here would print paper with no restriction over a deal that
+            // discounts nothing.
+            guard !names.isEmpty else { return "Valid on select items only." }
             return "Valid on \(listJoin(names)) only."
         case .products:
             // Includes the fail-closed empty decode: a match-nothing deal is validation's
@@ -260,7 +322,8 @@ public extension DealDraft {
                          condition: condition.termsCondition,
                          schedule: scheduleEnabled ? schedule.termsSchedule : nil,
                          channel: channel,
-                         perCustomerLimit: perCustomerLimit)
+                         perCustomerLimit: perCustomerLimit,
+                         discountKind: CouponTermsDiscountKind(discount))
     }
 }
 
