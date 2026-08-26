@@ -34,14 +34,23 @@ public struct DealPrint: Equatable, Sendable {
     ///
     /// `nil` means THIS DEAL DOES NOT PRINT — it is not an instruction to describe the
     /// rule automatically. The copy is written when the deal is authored, where a person
-    /// reads it before it is stored, so nothing is derived at print time and `Deal.name`
-    /// (an internal rule label like "Aug wknd scotch -5") can never reach a customer.
+    /// reads it before it is stored, so the OFFER is never described automatically and
+    /// `Deal.name` (an internal rule label like "Aug wknd scotch -5") can never reach a
+    /// customer. (`CouponTerms` deriving the small print from enforced predicates is a
+    /// different thing than dressing an internal label up as an offer — this ruling is
+    /// about the headline, and it stands.)
     ///
     /// Same fail-closed shape as a missing `couponCode`: a coupon that cannot describe
     /// itself is not printed at all.
     public let headline: String?
-    /// The small print, in the customer's words. Optional even when `headline` is set —
-    /// "$5 OFF" needs no qualification.
+    /// The owner's NOTE, appended after the derived terms clauses.
+    ///
+    /// The enforced small print — audience, scope, minimums, schedule window, channel,
+    /// per-customer limit — is composed by `CouponTerms` from the deal's structured
+    /// fields at coupon-assembly time and is never stored, so the paper only promises
+    /// what the register enforces. This field is for the part rules cannot say ("See
+    /// staff for details"), and it prints verbatim, last. Optional even when `headline`
+    /// is set — "$5 OFF" needs no qualification.
     public let terms: String?
 
     public init(trigger: DealPrintTrigger, priority: Int,
