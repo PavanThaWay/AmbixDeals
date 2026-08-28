@@ -1028,3 +1028,60 @@ struct DealDraftTests {
         #expect(DealDraft(from: deal) != nil, "kind: \(testCase.label)")
     }
 }
+
+// MARK: - Authoring guards (0.8.0): dead masks, sub-cent money, twin-safe id lists
+
+@Test("a schedule with no weekdays selected cannot save — the deal would never fire")
+func scheduleWithNoDaysBlocksSave() {
+    var draft = DealDraft(id: "d-nodays")
+    draft.name = "dead mask"
+    draft.discount = .flatAmountOff(amount: "5")
+    draft.scheduleEnabled = true
+    draft.schedule = DraftSchedule(weekdayMask: 0, dayStartMinute: 0, dayEndMinute: 1_440)
+    #expect(draft.validationErrors.contains(.scheduleNoDaysSelected))
+    // Only garbage bits above bit 6 is the same dead deal — the register masks to 7 bits.
+    draft.schedule.weekdayMask = 128
+    #expect(draft.validationErrors.contains(.scheduleNoDaysSelected))
+    // One real day clears it.
+    draft.schedule.weekdayMask = 0b0000010
+    #expect(!draft.validationErrors.contains(.scheduleNoDaysSelected))
+    // A disabled schedule is never checked — the mask never reaches the wire.
+    draft.schedule.weekdayMask = 0
+    draft.scheduleEnabled = false
+    #expect(!draft.validationErrors.contains(.scheduleNoDaysSelected))
+}
+
+@Test("sub-cent dollar input is rejected with its own message, not the generic bound")
+func subCentMoneyIsRejected() {
+    // The register keeps money in integer cents; a third decimal used to snap
+    // DIFFERENTLY in the two editors ("1.005" -> $1.01 here, $1.00 on the portal).
+    #expect(DraftValidation.positiveDecimal("1.005") == nil)
+    #expect(DraftValidation.positiveDecimal("29.999") == nil)
+    #expect(DraftValidation.positiveDecimal("29.99") == Decimal(string: "29.99"))
+    #expect(DraftValidation.positiveDecimal("30") == Decimal(30))
+    #expect(DraftValidation.amountError("1.005", otherwise: .amountInvalid) == .amountTooPrecise)
+    #expect(DraftValidation.amountError("0", otherwise: .amountInvalid) == .amountInvalid)
+    #expect(DraftValidation.amountError("999999", otherwise: .amountInvalid) == .amountTooLarge)
+    #expect(DraftValidation.amountError("29.99", otherwise: .amountInvalid) == nil)
+}
+
+@Test("a sub-cent minSubtotal blocks the draft with the precision message")
+func subCentConditionBlocksDraft() {
+    var draft = DealDraft(id: "d-precise")
+    draft.condition = .minSubtotal("1.005")
+    #expect(draft.validationErrors.contains(.amountTooPrecise))
+}
+
+@Test("wireIdList is twin-safe: NFC dedupe and code-point order, byte-stable for ASCII")
+func wireIdListUnicodeDiscipline() {
+    // ASCII unchanged — exactly what sorted() always produced.
+    #expect(DraftValidation.wireIdList(["Wine", "Beer", " Beer "]) == ["Beer", "Wine"])
+    // NFC ("é", U+00E9) and NFD ("e"+U+0301) are the same visible name; both sides
+    // must collapse them to ONE entry with the NFC bytes.
+    #expect(DraftValidation.wireIdList(["Caf\u{E9}", "Cafe\u{301}"]) == ["Caf\u{E9}"])
+    // Code-point order: U+F900 sorts before U+1F600 — the portal's UTF-16 .sort()
+    // put the surrogate pair first, so the ordering is pinned here as a twin table.
+    #expect(DraftValidation.wireIdList(["\u{1F600} Snacks", "\u{F900} Bakery"])
+        == ["\u{F900} Bakery", "\u{1F600} Snacks"])
+    #expect(DraftValidation.wireIdList(["cafz", "Cafe\u{301}"]) == ["Caf\u{E9}", "cafz"])
+}

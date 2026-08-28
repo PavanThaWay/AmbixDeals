@@ -30,6 +30,7 @@ public enum DraftError: Equatable, Sendable {
     /// a shared lower-bound message would give a 20-digit paste. See
     /// `DraftValidation.maxAmountDollars` for why an upper bound exists at all.
     case amountTooLarge
+    case amountTooPrecise
     case buyQtyInvalid
     case bonusQtyInvalid
     case tiersEmpty
@@ -45,6 +46,7 @@ public enum DraftError: Equatable, Sendable {
     case conditionMinSubtotalInvalid
     case scheduleWindowInvalid
     case scheduleDateRangeInvalid
+    case scheduleNoDaysSelected
     case perCustomerLimitNegative
     case usageLimitNegative
     case marginFloorOverrideNegative
@@ -77,6 +79,8 @@ public enum DraftError: Equatable, Sendable {
             return "Amount must be greater than $0."
         case .amountTooLarge:
             return "Amount must be at most \(DraftValidation.maxAmountDisplay)."
+        case .amountTooPrecise:
+            return "Amount must have at most two decimals."
         case .buyQtyInvalid:
             return "Buy quantity must be at least 1."
         case .bonusQtyInvalid:
@@ -105,6 +109,8 @@ public enum DraftError: Equatable, Sendable {
             return "Minimum subtotal must be greater than $0."
         case .scheduleWindowInvalid:
             return "Start time must be before end time."
+        case .scheduleNoDaysSelected:
+            return "Schedule needs at least one weekday."
         case .scheduleDateRangeInvalid:
             return "End date must be after start date."
         case .perCustomerLimitNegative:
@@ -168,10 +174,26 @@ enum DraftValidation {
         return value
     }
 
-    /// `0 < amount ≤ maxAmountDollars` — every dollar/unit-price/tier-price field.
+    /// `0 < amount ≤ maxAmountDollars`, at most two decimals — every dollar/unit-price/
+    /// tier-price field. The precision bound exists because the register keeps money in
+    /// integer CENTS and the two editors used to snap a third decimal differently
+    /// (Decimal half-up here, float `toFixed` on the portal), so "1.005" could save as a
+    /// different cent depending on which editor wrote it. Rejecting sub-cent input at
+    /// BOTH editors removes the divergent domain instead of picking a winner.
     static func positiveDecimal(_ raw: String) -> Decimal? {
-        guard let value = decimal(raw), value > 0, value <= maxAmountDollars else { return nil }
+        guard let value = decimal(raw), value > 0, value <= maxAmountDollars,
+              isWholeCents(value) else { return nil }
         return value
+    }
+
+    /// Whether a dollar `Decimal` lands exactly on a cent — `value * 100` has no
+    /// fractional part. The same scale-by-100 the wire encoder uses, so "valid to type"
+    /// and "encodes without rounding" are one predicate.
+    static func isWholeCents(_ value: Decimal) -> Bool {
+        var scaled = value * 100
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &scaled, 0, .plain)
+        return rounded == scaled
     }
 
     /// `true` only when the buffer parses cleanly to a number ABOVE the ceiling — lets
@@ -190,7 +212,11 @@ enum DraftValidation {
     /// reports the two bounds the same way.
     static func amountError(_ raw: String, otherwise generic: DraftError) -> DraftError? {
         guard positiveDecimal(raw) == nil else { return nil }
-        return exceedsAmountCap(raw) ? .amountTooLarge : generic
+        if exceedsAmountCap(raw) { return .amountTooLarge }
+        // In range but off the cent grid ("1.005"): name the real problem rather than
+        // the generic "must be greater than $0", which the value plainly satisfies.
+        if let value = decimal(raw), value > 0, !isWholeCents(value) { return .amountTooPrecise }
+        return generic
     }
 
     /// `≥ 1` — every quantity field that is a THRESHOLD (`buyQty`, `bonusQty`, tier `minQty`,
@@ -259,15 +285,26 @@ enum DraftValidation {
     }
 
     /// A `Set` of picked ids/names rendered as the deterministic wire array: each entry
-    /// normalized via `wireId(_:)`, whitespace-only entries DROPPED, duplicates-after-trim
-    /// collapsed, then sorted alphabetically.
+    /// trimmed via `wireId(_:)` then NFC-normalized, whitespace-only entries DROPPED,
+    /// duplicates collapsed, then sorted by Unicode CODE POINT over the NFC forms.
+    ///
+    /// NFC + code-point ordering (not `sorted()`'s default `String` comparison) because
+    /// this array is a TWIN: the portal's `dealWireId.ts` builds the same wire array in
+    /// JavaScript, where `===` is code-unit equality and `.sort()` is UTF-16 order —
+    /// both diverge from Swift's canonical-equivalence semantics on decomposed accents
+    /// and astral-plane characters. NFC makes canonical-equal names byte-equal on both
+    /// sides, and code-point order is the one ordering both languages implement
+    /// identically. For ASCII (every real id and category name today) all of this is
+    /// byte-for-byte what `sorted()` produced, so no stored doc changes.
     ///
     /// The sort is what makes the round-tripped `Deal.scope`'s order-sensitive `[String]`
-    /// independent of the `Set`'s hash-seeded iteration order (unchanged from before this
-    /// helper existed). The trim/drop/collapse steps are new, and are all no-ops for an
-    /// already-clean id list — a scope of `["b", "a"]` still emits exactly `["a", "b"]`.
+    /// independent of the `Set`'s hash-seeded iteration order — a scope of `["b", "a"]`
+    /// still emits exactly `["a", "b"]`.
     static func wireIdList(_ raw: Set<String>) -> [String] {
-        Set(raw.compactMap(nonEmptyWireId)).sorted()
+        Set(raw.compactMap { nonEmptyWireId($0)?.precomposedStringWithCanonicalMapping })
+            .sorted { lhs, rhs in
+                lhs.unicodeScalars.lexicographicallyPrecedes(rhs.unicodeScalars) { $0.value < $1.value }
+            }
     }
 
     /// `Decimal(string:)` is PERMISSIVE — it silently stops at the first character it can't

@@ -689,6 +689,11 @@ public struct DraftSchedule: Sendable, Equatable {
     /// schedule's ordering is never checked (and never reaches the wire either).
     func validationErrors() -> [DraftError] {
         var errors: [DraftError] = []
+        // Masked to the register's own 7 bits: `scheduleAdmits` tests `1 << weekday`,
+        // so a mask that is zero after `& 127` never admits a day — the deal saves,
+        // lists as Active everywhere, and silently never fires (and its coupon would
+        // print with no day clause saying why). The portal blocks this too.
+        if weekdayMask & 127 == 0 { errors.append(.scheduleNoDaysSelected) }
         if dayStartMinute >= dayEndMinute { errors.append(.scheduleWindowInvalid) }
         if let startDate, let endDate, endDate <= startDate { errors.append(.scheduleDateRangeInvalid) }
         return errors
