@@ -70,8 +70,16 @@ Numbers must be JSON integers. `targets` carries all four keys (`productIds`, `c
 non-empty `label`, its own `unitCount` and its own `targets`. Unknown keys inside
 `discount` are ignored.
 
-A grouped doc stays decodable and inert under 0.8.0: top-level `scope` is
-`{type: "products", ids: []}` and `print` is absent.
+A grouped doc stays decodable and inert under 0.8.0 only when all of these hold:
+top-level `scope` is `{type: "products", ids: []}`, `print` is absent, `channel` is
+`"inStore"`, `audience` is one of `any|member|senior|military`, limits are integers, and
+`couponCode` is an uppercase string or null. Under 0.8.0 an unknown `channel` or
+`audience` makes the whole `Deal` fail to decode, so the row disappears.
+
+Plain-words phrases for lists: `displayName`, `offerPhrase` and `targetPhrase`.
+
+Source-compatible with 0.8.0: no new `DealDiscount` or `DraftDiscount` cases, and the new
+`Deal` init parameters are defaulted.
 
 ## Lockstep rules
 
