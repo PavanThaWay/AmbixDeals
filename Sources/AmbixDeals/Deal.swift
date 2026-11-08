@@ -48,6 +48,19 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
     /// Whether this deal advertises itself on a receipt. `nil` = never printed, which is
     /// what every deal authored before v0.3.0 decodes to.
     public let print: DealPrint?
+    /// The parsed payload of a grouped promotion (`itemOffer`, `quantityGroup`, `mixGroup`,
+    /// `buyGetGroup`, `slotBundle`). `nil` for every other deal AND for a grouped deal whose
+    /// payload failed the strict decode; `discount` is `.unsupported` either way, so nothing
+    /// fires. Use `groupedKind` to tell a grouped row from a malformed one.
+    public let grouped: GroupedPromotion?
+    /// Bumped by the portal on every edit of a grouped promotion. `nil` when absent or unusable.
+    public let revision: Int?
+
+    /// The grouped kind named by `discount`, even when `grouped` is `nil`.
+    public var groupedKind: GroupedPromotionKind? {
+        guard case .unsupported(let raw) = discount else { return nil }
+        return GroupedPromotionKind(rawValue: raw)
+    }
 
     public init(
         id: String,
@@ -68,7 +81,9 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         // v0.3.0 addition source-COMPATIBLE, so Station and Daisho repin on their own
         // schedule with no atomic fleet update — the same property the v0.2.0 `priority`
         // removal was careful to preserve.
-        print: DealPrint? = nil
+        print: DealPrint? = nil,
+        grouped: GroupedPromotion? = nil,
+        revision: Int? = nil
     ) {
         self.id = id
         self.name = name
@@ -90,12 +105,14 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         // downstream can trust the invariant" claim did not actually hold until now.
         self.marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(marginFloorOverrideCents)
         self.print = print
+        self.grouped = grouped
+        self.revision = revision
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, isActive, channel, audience, discount, memberDiscount,
              scope, condition, schedule, couponCode, perCustomerLimit, usageLimit,
-             marginFloorOverrideCents, print
+             marginFloorOverrideCents, print, revision
     }
 
     public init(from decoder: Decoder) throws {
@@ -156,6 +173,15 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         // must not silently become an offer on paper either. A deal whose advertising is
         // broken still PRICES correctly — only its coupon stops printing.
         print = (try? container.decodeIfPresent(DealPrint.self, forKey: .print)) ?? nil
+
+        // A bad grouped payload never fails the Deal: `try?` leaves `grouped` nil and the
+        // row still lists as `.unsupported`, so nothing prices it and nothing edits it.
+        if case .unsupported(let raw) = discount, GroupedPromotionKind(rawValue: raw) != nil {
+            grouped = try? container.decode(GroupedPromotion.self, forKey: .discount)
+        } else {
+            grouped = nil
+        }
+        revision = (try? container.decodeIfPresent(Int.self, forKey: .revision)) ?? nil
     }
 
     /// The margin-floor override, bounded at BOTH ends before any consumer sees it.
