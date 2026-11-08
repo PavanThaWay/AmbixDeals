@@ -19,12 +19,6 @@ import Testing
         ]
     }
 
-    private func slot(unitCount: Bool = true) -> Raw {
-        var s: Raw = ["label": "Wine", "quantity": 1, "targets": targets()]
-        if unitCount { s["unitCount"] = 1 }
-        return s
-    }
-
     private func doc(discount: Raw, revision: Any = 1) -> Raw {
         [
             "name": "Grouped", "isActive": false, "channel": "inStore", "audience": "any",
@@ -307,6 +301,90 @@ import Testing
             Issue.record("discount should stay unsupported")
             return
         }
+    }
+
+    // MARK: - Pairs outside the table (S1's TypeScript copy must refuse the same eleven)
+
+    struct Outside: Sendable, CustomTestStringConvertible {
+        let name: String
+        let discount: [String: any Sendable]
+        var testDescription: String { name }
+    }
+
+    private static let oneSlot: [[String: any Sendable]] = [
+        ["label": "A", "quantity": 1, "unitCount": 1, "targets": t],
+    ]
+
+    static let outsidePairs: [Outside] = [
+        Outside(name: "itemOffer/fixedTotal", discount: ["kind": "itemOffer", "mode": "fixedTotal", "cents": 500, "unitCount": 1, "groupSize": 3, "targets": t]),
+        Outside(name: "quantityGroup/salePrice", discount: ["kind": "quantityGroup", "mode": "salePrice", "cents": 500, "unitCount": 1, "groupSize": 3, "targets": t]),
+        Outside(name: "quantityGroup/amountOff", discount: ["kind": "quantityGroup", "mode": "amountOff", "cents": 500, "unitCount": 1, "groupSize": 3, "targets": t]),
+        Outside(name: "mixGroup/salePrice", discount: ["kind": "mixGroup", "mode": "salePrice", "cents": 500, "unitCount": 1, "groupSize": 3, "targets": t]),
+        Outside(name: "mixGroup/amountOff", discount: ["kind": "mixGroup", "mode": "amountOff", "cents": 500, "unitCount": 1, "groupSize": 3, "targets": t]),
+        Outside(name: "buyGetGroup/salePrice", discount: ["kind": "buyGetGroup", "mode": "salePrice", "cents": 500, "unitCount": 1, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "buyGetGroup/amountOff", discount: ["kind": "buyGetGroup", "mode": "amountOff", "cents": 500, "unitCount": 1, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "buyGetGroup/fixedTotal", discount: ["kind": "buyGetGroup", "mode": "fixedTotal", "cents": 500, "unitCount": 1, "groupSize": 3, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "slotBundle/salePrice", discount: ["kind": "slotBundle", "mode": "salePrice", "cents": 500, "unitCount": 1, "slots": oneSlot]),
+        Outside(name: "slotBundle/amountOff", discount: ["kind": "slotBundle", "mode": "amountOff", "cents": 500, "unitCount": 1, "slots": oneSlot]),
+        Outside(name: "slotBundle/percentOff", discount: ["kind": "slotBundle", "mode": "percentOff", "percent": 10, "slots": oneSlot]),
+        // The same pairs again, carrying exactly what the rule they could be mistaken for would
+        // accept, so that nothing but the pair rule refuses them.
+        Outside(name: "itemOffer/fixedTotal (as a sale price)", discount: ["kind": "itemOffer", "mode": "fixedTotal", "cents": 500, "unitCount": 1, "targets": t]),
+        Outside(name: "buyGetGroup/salePrice (as a percent)", discount: ["kind": "buyGetGroup", "mode": "salePrice", "percent": 50, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "buyGetGroup/amountOff (as a percent)", discount: ["kind": "buyGetGroup", "mode": "amountOff", "percent": 50, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "buyGetGroup/fixedTotal (as a percent)", discount: ["kind": "buyGetGroup", "mode": "fixedTotal", "percent": 50, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "slotBundle/salePrice (as a total)", discount: ["kind": "slotBundle", "mode": "salePrice", "cents": 500, "slots": oneSlot]),
+        Outside(name: "slotBundle/amountOff (as a total)", discount: ["kind": "slotBundle", "mode": "amountOff", "cents": 500, "slots": oneSlot]),
+    ]
+
+    @Test(arguments: outsidePairs)
+    func everyPairOutsideTheTableIsRefused(_ pair: Outside) throws {
+        let deal = try #require(decode(pair.discount.mapValues { $0 as Any }))
+        #expect(deal.grouped == nil)
+        #expect(deal.discount == .unsupported(kind: pair.discount["kind"] as! String))
+    }
+
+    @Test func aNullOrMissingProductIdsIsRefusedBesideACategoriesSelector() throws {
+        func offer(_ productIds: Any?) -> Raw {
+            var tgt: Raw = ["categories": [["name": "Wine"] as Raw], "allProducts": false, "excludedProductIds": [String]()]
+            tgt["productIds"] = productIds
+            return ["kind": "itemOffer", "mode": "percentOff", "percent": 10, "targets": tgt]
+        }
+        #expect(grouped(offer([String]())) != nil)
+        #expect(grouped(offer(NSNull())) == nil)
+        #expect(grouped(offer(nil)) == nil)
+    }
+
+    @Test func unknownKeysNestedInTargetsCategoriesAndSlotsAreIgnored() throws {
+        var tgt = targets(productIds: [], categories: [["name": "Wine", "note": "x"]])
+        tgt["note"] = "x"
+        #expect(grouped(["kind": "itemOffer", "mode": "percentOff", "percent": 10, "targets": tgt]) != nil)
+        let slotDoc: Raw = ["kind": "slotBundle", "mode": "fixedTotal", "cents": 4500, "slots": [
+            ["label": "Wine", "quantity": 1, "unitCount": 1, "targets": targets(), "note": "x"] as Raw,
+        ]]
+        #expect(grouped(slotDoc) != nil)
+    }
+
+    @Test func aMissingModeIsRefused() throws {
+        #expect(grouped(["kind": "itemOffer", "percent": 10, "targets": Self.t.mapValues { $0 as Any }]) == nil)
+    }
+
+    // MARK: - The memberwise init keeps `grouped` only when it agrees with `discount`
+
+    @Test func initKeepsGroupedOnlyWhenItAgreesWithDiscount() throws {
+        let payload = try #require(grouped(["kind": "itemOffer", "mode": "percentOff", "percent": 10,
+                                            "targets": Self.t.mapValues { $0 as Any }]))
+        func deal(_ discount: DealDiscount) -> Deal {
+            Deal(id: "i", name: "i", isActive: true, channel: .inStore, audience: .any,
+                 discount: discount, memberDiscount: nil, scope: .products(ids: []),
+                 condition: .always, schedule: nil, couponCode: nil, perCustomerLimit: 0,
+                 usageLimit: 0, marginFloorOverrideCents: nil, grouped: payload, revision: 5)
+        }
+        #expect(deal(.flatPercentOff(percent: 10)).grouped == nil)
+        #expect(deal(.unsupported(kind: "mixGroup")).grouped == nil)
+        let agreeing = deal(.unsupported(kind: "itemOffer"))
+        #expect(agreeing.grouped == payload)
+        #expect(agreeing.revision == 5)
     }
 
     // MARK: - Neighbours

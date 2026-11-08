@@ -75,7 +75,29 @@ import Testing
              phrase: "Buy 2, get 1 50% off \u{B7} same product"),
         Case(discount: bundle(slots: [("Tequila", 1), ("Mixer", 1)], cents: 3500),
              phrase: "1 Tequila + 1 Mixer for $35.00"),
+        // A money offer applies to ONE size, so a size above 1 is said (Ruling K).
+        Case(discount: ["kind": "itemOffer", "mode": "salePrice", "cents": 899, "unitCount": 6, "targets": t],
+             phrase: "$8.99 each \u{B7} 6-pack"),
+        Case(discount: ["kind": "itemOffer", "mode": "amountOff", "cents": 300, "unitCount": 30, "targets": t],
+             phrase: "$3.00 off each \u{B7} 30-pack"),
+        Case(discount: ["kind": "mixGroup", "mode": "fixedTotal", "cents": 2500, "unitCount": 6,
+                        "groupSize": 3, "targets": t],
+             phrase: "Any 3 from this group for $25.00 \u{B7} 6-pack"),
+        Case(discount: ["kind": "quantityGroup", "mode": "fixedTotal", "cents": 2500, "unitCount": 6,
+                        "groupSize": 3, "targets": t, "perPurchaseCap": 2],
+             phrase: "3 of the same product for $25.00 \u{B7} 6-pack \u{B7} Max 2 per sale"),
+        Case(discount: bundleSlots([("Tequila", 2, 1), ("Mixer", 1, 4)], cents: 3500),
+             phrase: "2 Tequila + 1 Mixer 4-pack for $35.00"),
+        Case(discount: bundleSlots([("Tequila", 1, 1)], cents: 3500, extra: ["perPurchaseCap": 2]),
+             phrase: "1 Tequila for $35.00 \u{B7} Max 2 per sale"),
     ]
+
+    private static func bundleSlots(_ slots: [(String, Int, Int)], cents: Int, extra: Wire = [:]) -> Wire {
+        let parts: [Wire] = slots.map {
+            ["label": $0.0, "quantity": $0.1, "unitCount": $0.2, "targets": t]
+        }
+        return merged(["kind": "slotBundle", "mode": "fixedTotal", "cents": cents, "slots": parts], extra)
+    }
 
     private static func bundle(slots: [(String, Int)], cents: Int = 3500, extra: Wire = [:]) -> Wire {
         let parts: [Wire] = slots.map {
@@ -129,6 +151,14 @@ import Testing
     @Test func targetPhraseCountsExclusions() throws {
         let all = Self.targets(productIds: [], allProducts: true, excluded: ["x1", "x2"])
         #expect(try Self.promotion(offer(all)).targetPhrase == "All products \u{B7} 2 excluded")
+    }
+
+    @Test func targetPhraseCountsExclusionsForCategoriesAndProductLists() throws {
+        let cats = Self.targets(productIds: [], categories: [["name": "Red"], ["name": "White"]],
+                                excluded: ["x1", "x2"])
+        #expect(try Self.promotion(offer(cats)).targetPhrase == "Red, White \u{B7} 2 excluded")
+        let list = Self.targets(productIds: ["a", "b", "c"], excluded: ["b"])
+        #expect(try Self.promotion(offer(list)).targetPhrase == "3 products \u{B7} 1 excluded")
     }
 
     @Test func targetPhraseKeepsCategoryNamesVerbatim() throws {

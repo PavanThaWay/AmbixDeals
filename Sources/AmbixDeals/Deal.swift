@@ -53,7 +53,7 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
     /// payload failed the strict decode; `discount` is `.unsupported` either way, so nothing
     /// fires. Use `groupedKind` to tell a grouped row from a malformed one.
     public let grouped: GroupedPromotion?
-    /// Bumped by the portal on every edit of a grouped promotion. `nil` when absent or unusable.
+    /// Bumped by the server's write path on every edit of a grouped promotion. `nil` when absent or unusable.
     public let revision: Int?
 
     /// The grouped kind named by `discount`, even when `grouped` is `nil`.
@@ -105,7 +105,13 @@ public struct Deal: Sendable, Equatable, Identifiable, Decodable {
         // downstream can trust the invariant" claim did not actually hold until now.
         self.marginFloorOverrideCents = Deal.sanitizedMarginFloorOverride(marginFloorOverrideCents)
         self.print = print
-        self.grouped = grouped
+        // Kept only when it agrees with `discount` (a grouped row is `.unsupported(kind)` and the
+        // payload names that same kind), the way the margin override above is cleaned.
+        if case .unsupported(let raw) = discount, let grouped, grouped.kind.rawValue == raw {
+            self.grouped = grouped
+        } else {
+            self.grouped = nil
+        }
         self.revision = revision
     }
 

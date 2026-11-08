@@ -52,18 +52,26 @@ extension GroupedPromotion {
         let money = Self.money(cents ?? 0)
         let pct = percent ?? 0
         let size = groupSize ?? 0
+        // A money offer applies to ONE size (the saved unitCount), so a size above 1 is said.
+        // Percent offers apply to every size and say nothing.
+        let pack = (unitCount ?? 1) > 1 ? Self.dot + "\(unitCount ?? 1)-pack" : ""
         switch (kind, mode) {
-        case (.itemOffer, .salePrice): return "\(money) each"
-        case (.itemOffer, .amountOff): return "\(money) off each"
+        case (.itemOffer, .salePrice): return "\(money) each" + pack
+        case (.itemOffer, .amountOff): return "\(money) off each" + pack
         case (.itemOffer, _): return "\(pct)% off each"
-        case (.quantityGroup, .fixedTotal): return "\(size) of the same product for \(money)"
+        case (.quantityGroup, .fixedTotal): return "\(size) of the same product for \(money)" + pack
         case (.quantityGroup, _): return "Buy \(size) of the same product, \(pct)% off"
-        case (.mixGroup, .fixedTotal): return "Any \(size) from this group for \(money)"
+        case (.mixGroup, .fixedTotal): return "Any \(size) from this group for \(money)" + pack
         case (.mixGroup, _): return "Any \(size) from this group, \(pct)% off"
         case (.buyGetGroup, _):
             return "Buy \(buyQuantity ?? 0), get \(getQuantity ?? 0) \(pct)% off" + Self.dot + "same product"
         case (.slotBundle, _):
-            let parts = (slots ?? []).map { "\($0.quantity) \($0.label)" }.joined(separator: " + ")
+            let parts = (slots ?? []).map { slot in
+                slot.unitCount > 1
+                    ? "\(slot.quantity) \(slot.label) \(slot.unitCount)-pack"
+                    : "\(slot.quantity) \(slot.label)"
+            }
+            .joined(separator: " + ")
             return "\(parts) for \(money)"
         }
     }
