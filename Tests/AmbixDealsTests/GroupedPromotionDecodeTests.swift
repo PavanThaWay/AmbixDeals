@@ -50,87 +50,174 @@ import Testing
     // MARK: - Valid rows
 
     struct Row: Sendable, CustomTestStringConvertible {
-        let kind: GroupedPromotionKind
-        let mode: GroupedPromotionMode
         let discount: [String: any Sendable]
-        let cents: Int?
-        let percent: Int?
-        let unitCount: Int?
-        let groupSize: Int?
-        var testDescription: String { "\(kind.rawValue)/\(mode.rawValue)" }
+        let expected: Want
+        var testDescription: String { "\(expected.kind.rawValue)/\(expected.mode.rawValue)" }
     }
 
     private static let t: [String: any Sendable] = [
         "productIds": ["p1"], "categories": [[String: any Sendable]](),
         "allProducts": false, "excludedProductIds": [String](),
     ]
+    private static let tx: [String: any Sendable] = [
+        "productIds": ["p1"], "categories": [[String: any Sendable]](),
+        "allProducts": false, "excludedProductIds": ["x1"],
+    ]
+    private static let tAll: [String: any Sendable] = [
+        "productIds": [String](), "categories": [[String: any Sendable]](),
+        "allProducts": true, "excludedProductIds": ["x1", "x2"],
+    ]
+    private static let gt = GroupedTargets(
+        productIds: ["p1"], categories: [], allProducts: false, excludedProductIds: [])
+    private static let gtx = GroupedTargets(
+        productIds: ["p1"], categories: [], allProducts: false, excludedProductIds: ["x1"])
+    private static let gtAll = GroupedTargets(
+        productIds: [], categories: [], allProducts: true, excludedProductIds: ["x1", "x2"])
+
+    /// Every field of a `GroupedPromotion`, spelled out (it has no public memberwise init).
+    struct Want: Sendable, Equatable {
+        var kind: GroupedPromotionKind, mode: GroupedPromotionMode
+        var cents: Int?, percent: Int?, unitCount: Int?, groupSize: Int?
+        var buyQuantity: Int?, getQuantity: Int?
+        var targets: GroupedTargets?, slots: [GroupedSlot]?, perPurchaseCap: Int?
+
+        init(_ g: GroupedPromotion) {
+            kind = g.kind; mode = g.mode; cents = g.cents; percent = g.percent
+            unitCount = g.unitCount; groupSize = g.groupSize; buyQuantity = g.buyQuantity
+            getQuantity = g.getQuantity; targets = g.targets; slots = g.slots
+            perPurchaseCap = g.perPurchaseCap
+        }
+
+        init(
+            _ kind: GroupedPromotionKind, _ mode: GroupedPromotionMode,
+            cents: Int? = nil, percent: Int? = nil, unitCount: Int? = nil, groupSize: Int? = nil,
+            buy: Int? = nil, get: Int? = nil, targets: GroupedTargets? = nil,
+            slots: [GroupedSlot]? = nil, cap: Int? = nil
+        ) {
+            self.kind = kind; self.mode = mode; self.cents = cents; self.percent = percent
+            self.unitCount = unitCount; self.groupSize = groupSize; buyQuantity = buy
+            getQuantity = get; self.targets = targets; self.slots = slots; perPurchaseCap = cap
+        }
+    }
 
     static let rows: [Row] = [
-        Row(kind: .itemOffer, mode: .salePrice,
-            discount: ["kind": "itemOffer", "mode": "salePrice", "cents": 899, "unitCount": 6, "targets": t],
-            cents: 899, percent: nil, unitCount: 6, groupSize: nil),
-        Row(kind: .itemOffer, mode: .amountOff,
-            discount: ["kind": "itemOffer", "mode": "amountOff", "cents": 150, "unitCount": 1, "targets": t],
-            cents: 150, percent: nil, unitCount: 1, groupSize: nil),
-        Row(kind: .itemOffer, mode: .percentOff,
-            discount: ["kind": "itemOffer", "mode": "percentOff", "percent": 15, "targets": t],
-            cents: nil, percent: 15, unitCount: nil, groupSize: nil),
-        Row(kind: .quantityGroup, mode: .percentOff,
-            discount: ["kind": "quantityGroup", "mode": "percentOff", "percent": 10, "groupSize": 3,
+        Row(discount: ["kind": "itemOffer", "mode": "salePrice", "cents": 899, "unitCount": 6, "targets": t],
+            expected: Want(.itemOffer, .salePrice, cents: 899, unitCount: 6, targets: gt)),
+        Row(discount: ["kind": "itemOffer", "mode": "amountOff", "cents": 150, "unitCount": 2, "targets": tx],
+            expected: Want(.itemOffer, .amountOff, cents: 150, unitCount: 2, targets: gtx)),
+        Row(discount: ["kind": "itemOffer", "mode": "percentOff", "percent": 15, "targets": t],
+            expected: Want(.itemOffer, .percentOff, percent: 15, targets: gt)),
+        Row(discount: ["kind": "quantityGroup", "mode": "percentOff", "percent": 10, "groupSize": 3,
                        "targets": t, "perPurchaseCap": 4],
-            cents: nil, percent: 10, unitCount: nil, groupSize: 3),
-        Row(kind: .quantityGroup, mode: .fixedTotal,
-            discount: ["kind": "quantityGroup", "mode": "fixedTotal", "cents": 2000, "unitCount": 1,
+            expected: Want(.quantityGroup, .percentOff, percent: 10, groupSize: 3, targets: gt, cap: 4)),
+        Row(discount: ["kind": "quantityGroup", "mode": "fixedTotal", "cents": 2000, "unitCount": 1,
                        "groupSize": 2, "targets": t],
-            cents: 2000, percent: nil, unitCount: 1, groupSize: 2),
-        Row(kind: .mixGroup, mode: .percentOff,
-            discount: ["kind": "mixGroup", "mode": "percentOff", "percent": 20, "groupSize": 4, "targets": t],
-            cents: nil, percent: 20, unitCount: nil, groupSize: 4),
-        Row(kind: .mixGroup, mode: .fixedTotal,
-            discount: ["kind": "mixGroup", "mode": "fixedTotal", "cents": 3000, "unitCount": 2,
-                       "groupSize": 5, "targets": t],
-            cents: 3000, percent: nil, unitCount: 2, groupSize: 5),
-        Row(kind: .buyGetGroup, mode: .percentOff,
-            discount: ["kind": "buyGetGroup", "mode": "percentOff", "percent": 50, "buyQuantity": 2,
-                       "getQuantity": 1, "targets": t],
-            cents: nil, percent: 50, unitCount: nil, groupSize: nil),
-        Row(kind: .slotBundle, mode: .fixedTotal,
-            discount: ["kind": "slotBundle", "mode": "fixedTotal", "cents": 4500,
-                       "slots": [["label": "Wine", "quantity": 1, "unitCount": 1, "targets": t]]],
-            cents: 4500, percent: nil, unitCount: nil, groupSize: nil),
+            expected: Want(.quantityGroup, .fixedTotal, cents: 2000, unitCount: 1, groupSize: 2, targets: gt)),
+        Row(discount: ["kind": "mixGroup", "mode": "percentOff", "percent": 20, "groupSize": 4, "targets": t],
+            expected: Want(.mixGroup, .percentOff, percent: 20, groupSize: 4, targets: gt)),
+        Row(discount: ["kind": "mixGroup", "mode": "fixedTotal", "cents": 3000, "unitCount": 2,
+                       "groupSize": 5, "targets": t, "perPurchaseCap": 7],
+            expected: Want(.mixGroup, .fixedTotal, cents: 3000, unitCount: 2, groupSize: 5, targets: gt, cap: 7)),
+        Row(discount: ["kind": "buyGetGroup", "mode": "percentOff", "percent": 50, "buyQuantity": 2,
+                       "getQuantity": 3, "targets": t],
+            expected: Want(.buyGetGroup, .percentOff, percent: 50, buy: 2, get: 3, targets: gt)),
+        Row(discount: ["kind": "slotBundle", "mode": "fixedTotal", "cents": 4500,
+                       "slots": [["label": "Wine", "quantity": 2, "unitCount": 6, "targets": tx]]],
+            expected: Want(.slotBundle, .fixedTotal, cents: 4500, slots: [
+                GroupedSlot(label: "Wine", quantity: 2, unitCount: 6, targets: gtx)])),
+        Row(discount: ["kind": "itemOffer", "mode": "percentOff", "percent": 5, "targets": tAll],
+            expected: Want(.itemOffer, .percentOff, percent: 5, targets: gtAll)),
     ]
 
     @Test(arguments: rows)
     func everyKindAndModeInTheTableDecodes(_ row: Row) throws {
-        let deal = try #require(decode(row.discount))
-        #expect(deal.discount == .unsupported(kind: row.kind.rawValue))
-        let g = try #require(deal.grouped)
-        #expect(g.kind == row.kind)
-        #expect(g.mode == row.mode)
-        #expect(g.cents == row.cents)
-        #expect(g.percent == row.percent)
-        #expect(g.unitCount == row.unitCount)
-        #expect(g.groupSize == row.groupSize)
-        if row.kind == .slotBundle {
-            #expect(g.targets == nil)
-            #expect(g.slots?.count == 1)
-            #expect(g.slots?.first?.label == "Wine")
-            #expect(g.slots?.first?.targets.productIds == ["p1"])
-        } else {
-            #expect(g.slots == nil)
-            #expect(g.targets?.productIds == ["p1"])
+        let deal = try #require(decode(row.discount.mapValues { $0 as Any }))
+        #expect(deal.discount == .unsupported(kind: row.expected.kind.rawValue))
+        #expect(deal.grouped.map(Want.init) == row.expected)
+    }
+
+    // MARK: - The table's refusals, driven from the valid rows
+
+    private static let forbiddenValue: [String: Any] = [
+        "cents": 100, "percent": 10, "unitCount": 2, "groupSize": 3, "buyQuantity": 1,
+        "getQuantity": 1, "targets": t,
+        "slots": [["label": "Wine", "quantity": 1, "unitCount": 1, "targets": t]],
+    ]
+    private static let ranges: [String: ClosedRange<Int>] = [
+        "cents": 1...10_000_000, "percent": 1...99, "unitCount": 1...999, "groupSize": 2...999,
+        "buyQuantity": 1...999, "getQuantity": 1...999, "perPurchaseCap": 1...999,
+    ]
+
+    private func grouped(_ d: Raw) -> GroupedPromotion? { decode(d)?.grouped }
+
+    private func with(_ d: Raw, _ key: String, _ value: Any?) -> Raw {
+        var out = d
+        out[key] = value
+        return out
+    }
+
+    @Test(arguments: rows)
+    func everyRefusalRuleOfTheTableHolds(_ row: Row) throws {
+        let base: Raw = row.discount.mapValues { $0 as Any }
+        #expect(grouped(base) != nil)
+        let optionalCap = row.expected.kind != .itemOffer
+        let required = Set(base.keys).subtracting(["kind", "mode", "perPurchaseCap"])
+
+        for key in required {
+            #expect(grouped(with(base, key, nil)) == nil, "dropping \(key)")
+            #expect(grouped(with(base, key, NSNull())) == nil, "null \(key)")
         }
-        if row.kind == .quantityGroup, row.mode == .percentOff {
-            #expect(g.perPurchaseCap == 4)
+        for (key, value) in Self.forbiddenValue where !required.contains(key) {
+            #expect(grouped(with(base, key, value)) == nil, "forbidden \(key)")
+            #expect(grouped(with(base, key, NSNull())) != nil, "null \(key) is the same as absent")
+        }
+        if optionalCap {
+            #expect(grouped(with(base, "perPurchaseCap", NSNull())) != nil)
         } else {
-            #expect(g.perPurchaseCap == nil)
+            #expect(grouped(with(base, "perPurchaseCap", 2)) == nil, "itemOffer carries no cap")
+        }
+        for (key, range) in Self.ranges where required.contains(key) || (key == "perPurchaseCap" && optionalCap) {
+            #expect(grouped(with(base, key, range.lowerBound)) != nil, "\(key) low edge")
+            #expect(grouped(with(base, key, range.upperBound)) != nil, "\(key) high edge")
+            #expect(grouped(with(base, key, range.lowerBound - 1)) == nil, "\(key) below")
+            #expect(grouped(with(base, key, range.upperBound + 1)) == nil, "\(key) above")
         }
     }
 
-    @Test func buyGetFieldsDecode() throws {
-        let g = try #require(decode(Self.rows[7].discount)?.grouped)
-        #expect(g.buyQuantity == 2)
-        #expect(g.getQuantity == 1)
+    @Test func slotCountAndSlotFieldsHoldTheirEdges() throws {
+        func slotDoc(_ slots: [Raw]) -> Raw {
+            ["kind": "slotBundle", "mode": "fixedTotal", "cents": 4500, "slots": slots]
+        }
+        let one: Raw = ["label": "Wine", "quantity": 1, "unitCount": 1, "targets": Self.t]
+        #expect(grouped(slotDoc(Array(repeating: one, count: 20))) != nil)
+        #expect(grouped(slotDoc(Array(repeating: one, count: 19))) != nil)
+        #expect(grouped(slotDoc(Array(repeating: one, count: 21))) == nil)
+        #expect(grouped(slotDoc([])) == nil)
+        #expect(grouped(slotDoc([with(one, "label", "")])) == nil)
+        for key in ["quantity", "unitCount"] {
+            #expect(grouped(slotDoc([with(one, key, 999)])) != nil, "\(key) 999")
+            #expect(grouped(slotDoc([with(one, key, 0)])) == nil, "\(key) 0")
+            #expect(grouped(slotDoc([with(one, key, 1000)])) == nil, "\(key) 1000")
+            #expect(grouped(slotDoc([with(one, key, nil)])) == nil, "\(key) missing")
+        }
+        #expect(grouped(slotDoc([with(one, "targets", nil)])) == nil)
+        #expect(grouped(slotDoc([with(one, "label", nil)])) == nil)
+    }
+
+    @Test func targetsRefuseWhatTheTableRefuses() throws {
+        func doc(_ targets: Raw) -> Raw {
+            ["kind": "itemOffer", "mode": "percentOff", "percent": 15, "targets": targets]
+        }
+        let base: Raw = Self.t.mapValues { $0 as Any }
+        #expect(grouped(doc(base)) != nil)
+        #expect(grouped(doc(with(base, "allProducts", nil))) == nil)
+        #expect(grouped(doc(with(base, "productIds", nil))) == nil)
+        #expect(grouped(doc(with(base, "categories", nil))) == nil)
+        #expect(grouped(doc(with(base, "excludedProductIds", [""]))) == nil)
+        #expect(grouped(doc(with(base, "excludedProductIds", ["x1"]))) != nil)
+        let cat: Raw = ["name": "Wine", "docId": 9]
+        #expect(grouped(doc(with(with(base, "productIds", [String]()), "categories", [cat]))) == nil)
+        #expect(grouped(doc(with(with(base, "productIds", [String]()), "categories", [["name": "Wine", "docId": ""]]))) != nil)
     }
 
     // MARK: - Inertness
