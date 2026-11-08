@@ -42,6 +42,58 @@ Engine-adjacent tests (`DealEngine*Tests.swift`, `DealTraceTests.swift`,
 `RefundMoneyTests.swift`) stay in Station — they exercise types (`DealEngine`,
 `RefundMoney`, `DealCartLine`, …) that are not part of this package.
 
+## Grouped promotions (0.9.0)
+
+Five kinds are read into `Deal.grouped` (a `GroupedPromotion`): `itemOffer`,
+`quantityGroup`, `mixGroup`, `buyGetGroup`, `slotBundle`. `Deal.discount` stays
+`.unsupported(kind:)` for all five, so every existing "never fire, never edit, never
+offer" gate keeps working; `Deal.groupedKind` names the kind even when `grouped` is nil.
+`Deal.revision` is the edit counter the server's write path bumps (nil when absent or unusable).
+
+The decode is strict. One invalid field makes `grouped` nil; the `Deal` still decodes
+and lists. S1's TypeScript `wire.ts` copies this table exactly.
+
+| kind | mode | required (non-null) | must be null or absent | `perPurchaseCap` |
+|---|---|---|---|---|
+| itemOffer | salePrice, amountOff | cents, unitCount, targets | percent, groupSize, buyQuantity, getQuantity, slots | null or absent |
+| itemOffer | percentOff | percent, targets | cents, unitCount, groupSize, buyQuantity, getQuantity, slots | null or absent |
+| quantityGroup, mixGroup | percentOff | percent, groupSize, targets | cents, unitCount, buyQuantity, getQuantity, slots | optional |
+| quantityGroup, mixGroup | fixedTotal | cents, unitCount, groupSize, targets | percent, buyQuantity, getQuantity, slots | optional |
+| buyGetGroup | percentOff | percent, buyQuantity, getQuantity, targets | cents, unitCount, groupSize, slots | optional |
+| slotBundle | fixedTotal | cents, slots | percent, unitCount, groupSize, buyQuantity, getQuantity, targets | optional |
+
+Any other (kind, mode) pair, or an unknown mode, is invalid. Ranges: `cents` 1...10,000,000;
+`percent` 1...99; `unitCount`, `buyQuantity`, `getQuantity`, `perPurchaseCap`, slot
+`quantity` and slot `unitCount` 1...999; `groupSize` 2...999; `slots` 1...20 entries.
+Numbers must be JSON integers. `targets` carries all four keys (`productIds`, `categories`,
+`allProducts`, `excludedProductIds`) with exactly one selector active. A slot needs a
+non-empty `label`, its own `unitCount` and its own `targets`.
+
+Rules S1's TypeScript copy must also follow:
+
+- No `targets` key may be null (`productIds`, `categories`, `allProducts` and
+  `excludedProductIds` are all required, and a null or missing one is refused).
+- Unknown keys are ignored at every level: `discount`, `targets`, a category and a slot.
+- "Non-empty" means length above 0. A whitespace-only id, label or category name is
+  accepted, and nothing is trimmed.
+- A whole-number double (`10.0`, `1e1`) counts as an integer. `12.5` and `"3"` do not.
+- An empty-string category `docId` is accepted.
+- A missing `mode` is refused, like an unknown one.
+
+A grouped doc stays decodable and inert under 0.8.0 when S3 writes it the way spec 8.1
+says: `name` is a string, `isActive` is a boolean, `marginFloorOverrideCents` is `null`,
+there is no `memberDiscount`, top-level `scope` is `{type: "products", ids: []}`, and
+`print` is absent. On BOTH versions a wrong-typed top-level field, or an unknown
+`channel` or `audience`, drops the whole row. A `channel` of `both`, `online` or absent,
+an `audience` of `employee`, and a lowercase `couponCode` all still list, and stay inert,
+on 0.8.0.
+
+Plain-words phrases for lists: `displayName`, `offerPhrase` and `targetPhrase`.
+
+Source-compatible with 0.8.0: no new `DealDiscount` or `DraftDiscount` cases, and the new
+`Deal` init parameters are defaulted. Rebuilding a `Deal` field by field still compiles, but
+silently drops `grouped` and `revision`.
+
 ## Lockstep rules
 
 - **This package is the single source of truth for the deals wire shape.** Station
@@ -49,6 +101,7 @@ Engine-adjacent tests (`DealEngine*Tests.swift`, `DealTraceTests.swift`,
   again.
 - The `DealDraftTests` encode→decode lockstep sweep lives here specifically so
   encode and decode can never silently drift from each other across a version bump.
+- The grouped decode table above is part of that wire shape: change it only with a version bump here and in `wire.ts`.
 - Any wire-shape change (new discount kind, new field, changed defaulting/clamping
   behavior) is a **version bump** here, not a silent edit downstream. Consumers pin
   by exact version or a narrow range — see Semver discipline below.
