@@ -172,3 +172,38 @@ struct DealsSettingsFloorTests {
         #expect(seeded == DealsSettings(dealsEngineEnabled: true, allowBelowCost: false, bonusUnitFloorCents: 1))
     }
 }
+
+// MARK: - The two switches count as on only for a real true
+
+/// The Portal and the server read both switches as `=== true`. The register reads them the
+/// same way: only a genuine boolean `true` turns a switch on; a number, even `1`, reads off.
+@Suite("DealsSettings — switches are on only for a genuine true")
+struct DealsSettingsSwitchTests {
+
+    @Test("a number stored in a switch reads off",
+          arguments: [NSNumber(value: 1), NSNumber(value: Int64(1)), NSNumber(value: 1.0), NSNumber(value: 2)])
+    func numberInSwitchReadsOff(_ number: NSNumber) {
+        let settings = DealsSettings.decode(["allowBelowCost": number, "dealsEngineEnabled": number])
+        #expect(settings.allowBelowCost == false)
+        #expect(settings.dealsEngineEnabled == false)
+    }
+
+    @Test("a genuine true turns each switch on, as an NSNumber boolean or a Swift Bool")
+    func genuineTrueReadsOn() {
+        let boxed = DealsSettings.decode(["allowBelowCost": NSNumber(value: true), "dealsEngineEnabled": NSNumber(value: true)])
+        #expect(boxed.allowBelowCost == true)
+        #expect(boxed.dealsEngineEnabled == true)
+        let swift = DealsSettings.decode(["allowBelowCost": true, "dealsEngineEnabled": true])
+        #expect(swift.allowBelowCost == true)
+        #expect(swift.dealsEngineEnabled == true)
+    }
+
+    @Test("a genuine false, a zero, and a string all read off")
+    func falseZeroAndStringReadOff() {
+        for value in [NSNumber(value: false), NSNumber(value: 0)] as [Any] + ["true", false] {
+            let settings = DealsSettings.decode(["allowBelowCost": value, "dealsEngineEnabled": value])
+            #expect(settings.allowBelowCost == false)
+            #expect(settings.dealsEngineEnabled == false)
+        }
+    }
+}

@@ -6,10 +6,10 @@ import Foundation
 /// live by every other register.
 ///
 /// Deliberately fail-CLOSED, field by field:
-/// - `dealsEngineEnabled` (O-1) missing/mistyped → `false`. A malformed or partial doc
+/// - `dealsEngineEnabled` (O-1) missing/mistyped (a number included) → `false`. A malformed or partial doc
 ///   must never silently turn the deals engine on.
-/// - `allowBelowCost` (O-4) missing/mistyped → `false`. Mechanism A's post-hoc clamp
-///   stays ON by default; only an explicit, correctly-typed `true` lifts it.
+/// - `allowBelowCost` (O-4) missing/mistyped (a number included) → `false`. Mechanism A's
+///   post-hoc clamp stays ON by default; only a genuine boolean `true` lifts it.
 /// - `bonusUnitFloorCents` (O-4) missing/mistyped/fractional/non-finite → `1`, a whole
 ///   value past `Int64` → `Int.max`, and any decoded value is further clamped to `max(1, value)` — Mechanism B's per-bonus-unit floor is NEVER
 ///   allowed to reach 0 (the "never literally free alcohol" invariant `CostFloorPolicy`
@@ -54,13 +54,27 @@ public struct DealsSettings: Sendable, Equatable, MirrorEmitting {
     /// fails in) — never throws, and never lets a malformed doc widen what the deals
     /// engine is allowed to do.
     public static func decode(_ raw: [String: Any]) -> DealsSettings {
-        let dealsEngineEnabled = raw["dealsEngineEnabled"] as? Bool ?? false
-        let allowBelowCost = raw["allowBelowCost"] as? Bool ?? false
+        let dealsEngineEnabled = isGenuineTrue(raw["dealsEngineEnabled"])
+        let allowBelowCost = isGenuineTrue(raw["allowBelowCost"])
         return DealsSettings(
             dealsEngineEnabled: dealsEngineEnabled,
             allowBelowCost: allowBelowCost,
             bonusUnitFloorCents: bonusUnitFloorCents(raw["bonusUnitFloorCents"])
         )
+    }
+
+    /// `true` only for a genuine boolean `true`, the way the Portal and the server read a
+    /// switch (`=== true`). A number, even `1`, is not a boolean and reads `false`. The same
+    /// Darwin-guarded `CFBoolean` test as `DealDocumentSanitizer.sanitizedNumber`; elsewhere a
+    /// boolean `NSNumber` reports `objCType` `"c"`.
+    static func isGenuineTrue(_ value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return (value as? Bool) == true }
+        #if canImport(Darwin)
+        guard CFGetTypeID(number) == CFBooleanGetTypeID() else { return false }
+        #else
+        guard String(cString: number.objCType) == "c" else { return false }
+        #endif
+        return number.boolValue
     }
 
     /// `bonusUnitFloorCents` read the way the Portal reads it (`useDealPricingPolicy.ts`: an
