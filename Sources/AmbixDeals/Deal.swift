@@ -293,8 +293,10 @@ extension DealCondition: Decodable {
         case "minQuantity":
             self = .minQuantity(try container.decode(Int.self, forKey: .value))
         case "minSubtotal":
+            // A threshold, so an out-of-range stored value is clamped to what the editors
+            // accept rather than dropped.
             let dollars = try container.decode(Decimal.self, forKey: .value)
-            self = .minSubtotal(Money(decimalDollars: dollars))
+            self = .minSubtotal(Money(clampedStoredDollars: dollars))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .type, in: container, debugDescription: "Unrecognized condition type '\(type)'"
@@ -440,6 +442,12 @@ extension DealDiscount: Decodable {
              productId, quantity, components, bundlePrice
     }
 
+    /// The stored-number bounds (AmbixDeals 0.10.0). Every price and count a v1 kind carries
+    /// must lie in the range the promotion editors accept (money `0...DraftValidation
+    /// .maxAmountCents`, see `Money(storedDollars:)`). A value outside it makes THIS discount
+    /// `.unsupported(kind:)`: the engine never fires it and the Studio never edits it, while
+    /// the deal itself still decodes and lists, so it can be fixed or paused from the Portal.
+    /// A required key that is absent or not a number still throws, exactly as before.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let kind = try container.decode(String.self, forKey: .kind)
@@ -447,11 +455,11 @@ extension DealDiscount: Decodable {
         case "flatPercentOff":
             self = .flatPercentOff(percent: try container.decode(Decimal.self, forKey: .percent))
         case "flatAmountOff":
-            let dollars = try container.decode(Decimal.self, forKey: .amount)
-            self = .flatAmountOff(amount: Money(decimalDollars: dollars))
+            let amount = Money(storedDollars: try container.decode(Decimal.self, forKey: .amount))
+            self = amount.map { .flatAmountOff(amount: $0) } ?? .unsupported(kind: kind)
         case "fixedPrice":
-            let dollars = try container.decode(Decimal.self, forKey: .price)
-            self = .fixedPrice(price: Money(decimalDollars: dollars))
+            let price = Money(storedDollars: try container.decode(Decimal.self, forKey: .price))
+            self = price.map { .fixedPrice(price: $0) } ?? .unsupported(kind: kind)
         case "buyXGetYBonus":
             let buyQty = try container.decode(Int.self, forKey: .buyQty)
             let bonusQty = try container.decode(Int.self, forKey: .bonusQty)
@@ -461,7 +469,11 @@ extension DealDiscount: Decodable {
             let percentOff = try container.decode(Decimal.self, forKey: .percentOff)
             self = .buyXGetYPercentOff(buyQty: buyQty, percentOff: percentOff)
         case "tieredQty":
-            self = .tieredQty(tiers: try container.decode([QtyTier].self, forKey: .tiers))
+            let stored = try container.decode([StoredQtyTier].self, forKey: .tiers)
+            let tiers = stored.compactMap { tier in
+                Money(storedDollars: tier.unitPrice).map { QtyTier(minQty: tier.minQty, unitPrice: $0) }
+            }
+            self = tiers.count == stored.count ? .tieredQty(tiers: tiers) : .unsupported(kind: kind)
         case "mixedCase":
             self = .mixedCase(tiers: try container.decode([MixedCaseTier].self, forKey: .tiers))
         case "unlockBonusProduct":
@@ -472,14 +484,14 @@ extension DealDiscount: Decodable {
                 quantity: Self.decodedGrantQuantity(container)
             )
         case "unlockAmountOffCart":
-            let dollars = try container.decode(Decimal.self, forKey: .amount)
-            self = .unlockAmountOffCart(amount: Money(decimalDollars: dollars))
+            let amount = Money(storedDollars: try container.decode(Decimal.self, forKey: .amount))
+            self = amount.map { .unlockAmountOffCart(amount: $0) } ?? .unsupported(kind: kind)
         case "unlockPercentOffCart":
             self = .unlockPercentOffCart(percent: try container.decode(Decimal.self, forKey: .percent))
         case "bundle":
             let components = try container.decode([BundleComponent].self, forKey: .components)
-            let dollars = try container.decode(Decimal.self, forKey: .bundlePrice)
-            self = .bundle(components: components, bundlePrice: Money(decimalDollars: dollars))
+            let price = Money(storedDollars: try container.decode(Decimal.self, forKey: .bundlePrice))
+            self = price.map { .bundle(components: components, bundlePrice: $0) } ?? .unsupported(kind: kind)
         default:
             // Unknown OR one of the 9 non-v1 (decode-only) kinds land here — decodes fine,
             // `DealEngine` never fires it. See the case's own doc comment.
@@ -522,18 +534,44 @@ extension DealDiscount: Decodable {
     }
 }
 
+/// A `tieredQty` tier as stored, before its price is judged (`DealDiscount.init(from:)`).
+private struct StoredQtyTier: Decodable {
+    let minQty: Int
+    let unitPrice: Decimal
+}
+
 // MARK: - Decimal-dollars -> Money (never a Double round-trip)
 
 private extension Money {
+    /// `dollars` scaled to cents and rounded half-up, still as a `Decimal`, so a range check
+    /// can judge the stored value itself before anything converts it to `Int`.
+    static func roundedCents(_ dollars: Decimal) -> Decimal {
+        var scaled = dollars * 100
+        var rounded = Decimal()
+        NSDecimalRound(&rounded, &scaled, 0, .plain)
+        return rounded
+    }
+
+    /// A stored price or amount, or `nil` when its cents lie outside
+    /// `0...DraftValidation.maxAmountCents` (the range every promotion editor accepts).
+    init?(storedDollars dollars: Decimal) {
+        let cents = Self.roundedCents(dollars)
+        guard cents >= 0, cents <= Decimal(DraftValidation.maxAmountCents) else { return nil }
+        self.init(cents: (cents as NSDecimalNumber).intValue)
+    }
+
+    /// A stored threshold held to `0...DraftValidation.maxAmountCents`.
+    init(clampedStoredDollars dollars: Decimal) {
+        let cents = min(max(Self.roundedCents(dollars), 0), Decimal(DraftValidation.maxAmountCents))
+        self.init(cents: (cents as NSDecimalNumber).intValue)
+    }
+
     /// Builds `Money` from a wire dollar amount that decoded straight into `Decimal` (JSON
     /// numbers decode into `Decimal` without an intermediate `Double`, so `9.99`/`33.33`
     /// round-trip to the exact cent). Deliberately does NOT go through `Money(dollars:)`,
     /// which takes a `Double` and would reintroduce binary-float error for values like these.
     init(decimalDollars dollars: Decimal) {
-        var scaled = dollars * 100
-        var rounded = Decimal()
-        NSDecimalRound(&rounded, &scaled, 0, .plain)
-        self.init(cents: (rounded as NSDecimalNumber).intValue)
+        self.init(cents: (Self.roundedCents(dollars) as NSDecimalNumber).intValue)
     }
 }
 
