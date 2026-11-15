@@ -209,6 +209,38 @@ struct StoredNumberWriterDocumentTests {
         #expect(deal.condition == .minSubtotal(Money(cents: DraftValidation.maxAmountCents)))
     }
 
+    @Test("Portal count documents at the ceiling decode exactly; a count one over it lists dormant")
+    func portalCountDocumentsDecode() throws {
+        // `encodeDiscount` writes every count as `Math.trunc(n)`; the iPad SDK hands a stored
+        // integer back as an `NSNumber` holding an Int64.
+        let always: [String: Any] = ["type": "always", "value": NSNull()]
+        func deal(_ discount: [String: Any]) throws -> Deal {
+            try #require(DealDocumentSanitizer.decodeDeal(portalDocument(discount: discount, condition: always), id: "p1"))
+        }
+        #expect(try deal(["kind": "buyXGetYBonus",
+                          "buyQty": NSNumber(value: Int64(1_000_000)),
+                          "bonusQty": NSNumber(value: Int64(1))]).discount
+                == .buyXGetYBonus(buyQty: 1_000_000, bonusQty: 1))
+        #expect(try deal(["kind": "buyXGetYPercentOff",
+                          "buyQty": NSNumber(value: Int64(2)),
+                          "percentOff": NSNumber(value: Int64(50))]).discount
+                == .buyXGetYPercentOff(buyQty: 2, percentOff: 50))
+        #expect(try deal(["kind": "mixedCase",
+                          "tiers": [["minQty": NSNumber(value: Int64(6)), "discountPercent": NSNumber(value: Int64(10))]]]).discount
+                == .mixedCase(tiers: [MixedCaseTier(minQty: 6, discountPercent: 10)]))
+        let components: [[String: Any]] = [
+            ["productId": "a", "qty": NSNumber(value: Int64(1_000_000))],
+            ["productId": "b", "qty": NSNumber(value: Int64(2))],
+        ]
+        #expect(try deal(["kind": "bundle", "components": components, "bundlePrice": NSNumber(value: 19.99)]).discount
+                == .bundle(components: [BundleComponent(productId: "a", qty: 1_000_000), BundleComponent(productId: "b", qty: 2)],
+                           bundlePrice: Money(cents: 1999)))
+        #expect(try deal(["kind": "buyXGetYBonus",
+                          "buyQty": NSNumber(value: Int64(2)),
+                          "bonusQty": NSNumber(value: Int64(1_000_001))]).discount
+                == .unsupported(kind: "buyXGetYBonus"))
+    }
+
     @Test("a register-authored price at the ceiling round-trips to its exact cents")
     func registerAuthoredCeilingRoundTrips() throws {
         var draft = validMinimalDraft()

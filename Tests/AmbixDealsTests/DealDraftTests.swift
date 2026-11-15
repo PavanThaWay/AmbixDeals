@@ -1147,6 +1147,23 @@ struct DealDraftQuantityCeilingTests {
         #expect(!errors.contains(.quantityTooLarge))
     }
 
+    @Test("a signed or padded count over 1,000,000 still gets the ceiling's message",
+          arguments: DraftCountField.allCases, ["+1000001", " 1000001 "])
+    func signedOrPaddedOverCeiling(_ field: DraftCountField, _ count: String) {
+        let draft = field.draft(count)
+        #expect(!draft.canSave)
+        #expect(field.wireRefused(draft))
+        #expect(draft.validationErrors == [.quantityTooLarge])
+    }
+
+    @Test("a count in non-ASCII digits keeps its own field's message, not the ceiling's",
+          arguments: DraftCountField.allCases, ["\u{FF12}", "\u{FF11}\u{FF10}\u{FF10}\u{FF10}\u{FF10}\u{FF10}\u{FF11}"])
+    func nonASCIIDigitsKeepFieldMessage(_ field: DraftCountField, _ count: String) {
+        let errors = field.draft(count).validationErrors
+        #expect(!errors.isEmpty)
+        #expect(!errors.contains(.quantityTooLarge))
+    }
+
     @Test("the bonus-grant quantity keeps its own 100,000 ceiling and message")
     func grantQuantityKeepsItsOwnCeiling() {
         var draft = validMinimalDraft()
