@@ -10,8 +10,8 @@ import Foundation
 ///   must never silently turn the deals engine on.
 /// - `allowBelowCost` (O-4) missing/mistyped → `false`. Mechanism A's post-hoc clamp
 ///   stays ON by default; only an explicit, correctly-typed `true` lifts it.
-/// - `bonusUnitFloorCents` (O-4) missing/mistyped → `1`, and any decoded value is
-///   further clamped to `max(1, value)` — Mechanism B's per-bonus-unit floor is NEVER
+/// - `bonusUnitFloorCents` (O-4) missing/mistyped/fractional/non-finite → `1`, a whole
+///   value past `Int64` → `Int.max`, and any decoded value is further clamped to `max(1, value)` — Mechanism B's per-bonus-unit floor is NEVER
 ///   allowed to reach 0 (the "never literally free alcohol" invariant `CostFloorPolicy`
 ///   depends on; see that type's doc comment). A store cannot configure this away.
 public struct DealsSettings: Sendable, Equatable, MirrorEmitting {
@@ -56,14 +56,20 @@ public struct DealsSettings: Sendable, Equatable, MirrorEmitting {
     public static func decode(_ raw: [String: Any]) -> DealsSettings {
         let dealsEngineEnabled = raw["dealsEngineEnabled"] as? Bool ?? false
         let allowBelowCost = raw["allowBelowCost"] as? Bool ?? false
-        // Int-or-Double tolerant, matching `DailySaleDecoder`'s `unitsPerItem` decode —
-        // Firestore hands whole numbers back as either depending on the writer.
-        let floorCents = (raw["bonusUnitFloorCents"] as? Int)
-            ?? Int((raw["bonusUnitFloorCents"] as? Double) ?? 1)
         return DealsSettings(
             dealsEngineEnabled: dealsEngineEnabled,
             allowBelowCost: allowBelowCost,
-            bonusUnitFloorCents: max(1, floorCents)
+            bonusUnitFloorCents: bonusUnitFloorCents(raw["bonusUnitFloorCents"])
         )
+    }
+
+    /// `bonusUnitFloorCents` read the way the Portal reads it (`useDealPricingPolicy.ts`: an
+    /// integer `>= 1`, else `1`). Int-or-Double tolerant, because Firestore hands whole numbers
+    /// back as either depending on the writer: an exact `Int >= 1` is kept; a whole, finite
+    /// `Double >= 1` is kept, saturating at `Int.max` past `Int64`; anything else is `1`.
+    static func bonusUnitFloorCents(_ value: Any?) -> Int {
+        if let cents = value as? Int { return max(1, cents) }
+        guard let cents = value as? Double, cents.isFinite, cents >= 1, cents.rounded() == cents else { return 1 }
+        return Int(exactly: cents) ?? Int.max
     }
 }

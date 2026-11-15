@@ -122,3 +122,53 @@ struct DealsSettingsTests {
         #expect(policy == CostFloorPolicy())
     }
 }
+
+// MARK: - bonusUnitFloorCents read as the Portal reads it
+
+/// The Portal (`useDealPricingPolicy.ts`) keeps the floor only when it is an integer `>= 1`
+/// and otherwise uses `1`. The register's read gives the same answer for every stored number,
+/// saturating at `Int.max` past `Int64` (the Portal keeps such a number as is; both mean "no
+/// bonus bottle is ever that cheap").
+@Suite("DealsSettings — bonusUnitFloorCents, every stored number")
+struct DealsSettingsFloorTests {
+
+    @Test("a whole floor past Int64 saturates at Int.max")
+    func floorSaturatesPastInt64() {
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": 1e19]).bonusUnitFloorCents == Int.max)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": NSNumber(value: 1e19)]).bonusUnitFloorCents == Int.max)
+    }
+
+    @Test("a non-finite floor or one far below zero reads 1",
+          arguments: [-1e19, Double.nan, Double.infinity, -Double.infinity])
+    func floorNonFiniteOrHugeNegativeReadsOne(_ value: Double) {
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": value]).bonusUnitFloorCents == 1)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": NSNumber(value: value)]).bonusUnitFloorCents == 1)
+    }
+
+    @Test("a fractional floor reads 1; whole floors keep their value")
+    func floorFractionalOrWhole() {
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": 2.5]).bonusUnitFloorCents == 1)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": NSNumber(value: 2.5)]).bonusUnitFloorCents == 1)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": 250]).bonusUnitFloorCents == 250)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": 2.0]).bonusUnitFloorCents == 2)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": NSNumber(value: 250.0)]).bonusUnitFloorCents == 250)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": NSNumber(value: Int64(300))]).bonusUnitFloorCents == 300)
+        #expect(DealsSettings.decode(["bonusUnitFloorCents": NSNumber(value: Int64.max)]).bonusUnitFloorCents == Int.max)
+    }
+
+    @Test("the documents the writers produce keep their floor: the register's Settings sheet and the server seed")
+    func writerDocumentsKeepTheirFloor() {
+        // The register's Settings sheet: `mirrorWrite()` (.bool/.bool/.int) as Swift values.
+        let sheet = DealsSettings(dealsEngineEnabled: true, allowBelowCost: false, bonusUnitFloorCents: 300)
+        let sheetDoc = sheet.mirrorWrite().fields.mapValues(firestoreValueToAny)
+        #expect(DealsSettings.decode(sheetDoc) == sheet)
+        // `seedDealsSettings` (Admin SDK): `{dealsEngineEnabled: true, allowBelowCost: false,
+        // bonusUnitFloorCents: 1}`, read back by the iPad SDK as NSNumbers.
+        let seeded = DealsSettings.decode([
+            "dealsEngineEnabled": NSNumber(value: true),
+            "allowBelowCost": NSNumber(value: false),
+            "bonusUnitFloorCents": NSNumber(value: Int64(1)),
+        ])
+        #expect(seeded == DealsSettings(dealsEngineEnabled: true, allowBelowCost: false, bonusUnitFloorCents: 1))
+    }
+}
