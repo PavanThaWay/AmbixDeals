@@ -1085,3 +1085,80 @@ func wireIdListUnicodeDiscipline() {
         == ["\u{F900} Bakery", "\u{1F600} Snacks"])
     #expect(DraftValidation.wireIdList(["cafz", "Cafe\u{301}"]) == ["Caf\u{E9}", "cafz"])
 }
+
+// MARK: - The quantity ceiling every count field shares (the Portal's MAX_QUANTITY)
+
+/// Each count field a manager types into, with a draft that is valid apart from that field.
+enum DraftCountField: String, CaseIterable, Sendable {
+    case bonusBuyQty, bonusQty, percentOffBuyQty, tierMinQty, mixedCaseMinQty, bundleComponentQty, conditionMinQuantity
+
+    func draft(_ count: String) -> DealDraft {
+        var draft = validMinimalDraft()
+        switch self {
+        case .bonusBuyQty:
+            draft.discount = .buyXGetYBonus(buyQty: count, bonusQty: "1")
+        case .bonusQty:
+            draft.discount = .buyXGetYBonus(buyQty: "2", bonusQty: count)
+        case .percentOffBuyQty:
+            draft.discount = .buyXGetYPercentOff(buyQty: count, percentOff: "50")
+        case .tierMinQty:
+            draft.discount = .tieredQty(tiers: [DraftQtyTier(minQty: count, unitPrice: "9.99")])
+        case .mixedCaseMinQty:
+            draft.discount = .mixedCase(tiers: [DraftMixedCaseTier(minQty: count, discountPercent: "10")])
+        case .bundleComponentQty:
+            draft.discount = .bundle(
+                components: [DraftBundleComponent(productId: "a", qty: count), DraftBundleComponent(productId: "b", qty: "1")],
+                bundlePrice: "19.99")
+        case .conditionMinQuantity:
+            draft.condition = .minQuantity(count)
+        }
+        return draft
+    }
+
+    /// Whether the field's own wire encoder refused the value.
+    func wireRefused(_ draft: DealDraft) -> Bool {
+        self == .conditionMinQuantity ? draft.condition.wireFields() == nil : draft.discount.wireFields() == nil
+    }
+}
+
+@Suite("DealDraft — quantity ceiling of 1,000,000")
+struct DealDraftQuantityCeilingTests {
+
+    @Test("a count over 1,000,000 blocks the save and never reaches the wire",
+          arguments: DraftCountField.allCases, ["1000001", "9223372036854775807", "99999999999999999999"])
+    func overCeilingCountBlocksSave(_ field: DraftCountField, _ count: String) {
+        let draft = field.draft(count)
+        #expect(!draft.canSave)
+        #expect(field.wireRefused(draft))
+        #expect(draft.validationErrors == [.quantityTooLarge])
+    }
+
+    @Test("the over-ceiling message is the Portal composer's own sentence")
+    func quantityTooLargeMessageMatchesPortal() {
+        #expect(DraftError.quantityTooLarge.message == "That number must be at most 1,000,000.")
+        #expect(DraftValidation.maxQuantity == 1_000_000)
+    }
+
+    @Test("a count below 1 keeps its own field's message, not the ceiling's",
+          arguments: DraftCountField.allCases, ["0", "-5", "abc", ""])
+    func belowOneKeepsFieldMessage(_ field: DraftCountField, _ count: String) {
+        let errors = field.draft(count).validationErrors
+        #expect(!errors.isEmpty)
+        #expect(!errors.contains(.quantityTooLarge))
+    }
+
+    @Test("the bonus-grant quantity keeps its own 100,000 ceiling and message")
+    func grantQuantityKeepsItsOwnCeiling() {
+        var draft = validMinimalDraft()
+        draft.discount = .unlockBonusProduct(productId: "sku-1", quantity: "1000001")
+        #expect(draft.validationErrors == [.unlockBonusProductQuantityInvalid])
+    }
+
+    @Test("1,000,000 itself saves and reaches the wire", arguments: DraftCountField.allCases)
+    func ceilingCountSaves(_ field: DraftCountField) {
+        let draft = field.draft("1000000")
+        #expect(draft.validationErrors == [])
+        #expect(draft.canSave)
+        #expect(!field.wireRefused(draft))
+    }
+}

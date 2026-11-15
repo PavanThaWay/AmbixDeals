@@ -219,3 +219,124 @@ struct StoredNumberWriterDocumentTests {
         #expect(deal.condition == .minSubtotal(Money(cents: 10_000_000)))
     }
 }
+
+// MARK: - Counts
+
+@Suite("Stored numbers — a count outside 1...1,000,000 makes the discount dormant")
+struct StoredCountBoundsTests {
+
+    static let outOfRange: [StoredDiscountCase] = [
+        StoredDiscountCase(
+            label: "buyXGetYBonus buyQty 9223372036854775807",
+            json: #"{"kind":"buyXGetYBonus","buyQty":9223372036854775807,"bonusQty":1}"#, kind: "buyXGetYBonus"),
+        StoredDiscountCase(
+            label: "buyXGetYBonus bonusQty 1000001",
+            json: #"{"kind":"buyXGetYBonus","buyQty":2,"bonusQty":1000001}"#, kind: "buyXGetYBonus"),
+        StoredDiscountCase(
+            label: "buyXGetYBonus buyQty 0",
+            json: #"{"kind":"buyXGetYBonus","buyQty":0,"bonusQty":1}"#, kind: "buyXGetYBonus"),
+        StoredDiscountCase(
+            label: "buyXGetYBonus bonusQty -3",
+            json: #"{"kind":"buyXGetYBonus","buyQty":2,"bonusQty":-3}"#, kind: "buyXGetYBonus"),
+        StoredDiscountCase(
+            label: "buyXGetYBonus buyQty 1e20",
+            json: #"{"kind":"buyXGetYBonus","buyQty":1e20,"bonusQty":1}"#, kind: "buyXGetYBonus"),
+        StoredDiscountCase(
+            label: "buyXGetYPercentOff buyQty 9223372036854775807",
+            json: #"{"kind":"buyXGetYPercentOff","buyQty":9223372036854775807,"percentOff":50}"#, kind: "buyXGetYPercentOff"),
+        StoredDiscountCase(
+            label: "buyXGetYPercentOff buyQty 2.5",
+            json: #"{"kind":"buyXGetYPercentOff","buyQty":2.5,"percentOff":50}"#, kind: "buyXGetYPercentOff"),
+        StoredDiscountCase(
+            label: "tieredQty minQty 2000000",
+            json: #"{"kind":"tieredQty","tiers":[{"minQty":2,"unitPrice":9.99},{"minQty":2000000,"unitPrice":8.99}]}"#,
+            kind: "tieredQty"),
+        StoredDiscountCase(
+            label: "tieredQty minQty 2.5",
+            json: #"{"kind":"tieredQty","tiers":[{"minQty":2.5,"unitPrice":9.99}]}"#, kind: "tieredQty"),
+        StoredDiscountCase(
+            label: "mixedCase minQty 2000000",
+            json: #"{"kind":"mixedCase","tiers":[{"minQty":2000000,"discountPercent":10}]}"#, kind: "mixedCase"),
+        StoredDiscountCase(
+            label: "mixedCase minQty 1e20",
+            json: #"{"kind":"mixedCase","tiers":[{"minQty":6,"discountPercent":5},{"minQty":1e20,"discountPercent":10}]}"#,
+            kind: "mixedCase"),
+        StoredDiscountCase(
+            label: "bundle component qty 2000000",
+            json: #"{"kind":"bundle","components":[{"productId":"a","qty":2000000},{"productId":"b","qty":1}],"bundlePrice":19.99}"#,
+            kind: "bundle"),
+        StoredDiscountCase(
+            label: "bundle component qty 2.5",
+            json: #"{"kind":"bundle","components":[{"productId":"a","qty":1},{"productId":"b","qty":2.5}],"bundlePrice":19.99}"#,
+            kind: "bundle"),
+    ]
+
+    @Test("an out-of-range or fractional stored count makes the discount dormant and the deal still decodes",
+          arguments: outOfRange)
+    func outOfRangeCountIsDormant(_ storedCase: StoredDiscountCase) throws {
+        let deal = try decoded(discount: storedCase.json)
+        #expect(deal.id == "d1")
+        #expect(deal.isActive)
+        #expect(deal.discount == .unsupported(kind: storedCase.kind))
+    }
+
+    @Test("the ceiling is inclusive: 1,000,000 and 1 keep their exact values")
+    func countBoundsAreInclusive() throws {
+        #expect(try decoded(discount: #"{"kind":"buyXGetYBonus","buyQty":1000000,"bonusQty":1}"#).discount
+                == .buyXGetYBonus(buyQty: 1_000_000, bonusQty: 1))
+        #expect(try decoded(discount: #"{"kind":"buyXGetYPercentOff","buyQty":1,"percentOff":50}"#).discount
+                == .buyXGetYPercentOff(buyQty: 1, percentOff: 50))
+        #expect(try decoded(discount: #"{"kind":"tieredQty","tiers":[{"minQty":1000000,"unitPrice":1}]}"#).discount
+                == .tieredQty(tiers: [QtyTier(minQty: 1_000_000, unitPrice: Money(cents: 100))]))
+        #expect(try decoded(discount: #"{"kind":"mixedCase","tiers":[{"minQty":6,"discountPercent":10},{"minQty":12.0,"discountPercent":15}]}"#).discount
+                == .mixedCase(tiers: [MixedCaseTier(minQty: 6, discountPercent: 10),
+                                      MixedCaseTier(minQty: 12, discountPercent: 15)]))
+        #expect(try decoded(discount: #"{"kind":"bundle","components":[{"productId":"a","qty":1000000},{"productId":"b","qty":1}],"bundlePrice":5}"#).discount
+                == .bundle(components: [BundleComponent(productId: "a", qty: 1_000_000), BundleComponent(productId: "b", qty: 1)],
+                           bundlePrice: Money(cents: 500)))
+    }
+
+    @Test("a count key absent or not a number still fails the decode, exactly as before",
+          arguments: [
+            #"{"kind":"buyXGetYBonus","buyQty":2}"#,
+            #"{"kind":"buyXGetYBonus","buyQty":"2","bonusQty":1}"#,
+            #"{"kind":"buyXGetYPercentOff","buyQty":null,"percentOff":50}"#,
+            #"{"kind":"tieredQty","tiers":[{"unitPrice":9.99}]}"#,
+            #"{"kind":"mixedCase","tiers":[{"minQty":"6","discountPercent":10}]}"#,
+            #"{"kind":"bundle","components":[{"productId":"a"},{"productId":"b","qty":1}],"bundlePrice":5}"#,
+          ])
+    func missingOrMistypedCountStillThrows(_ discount: String) {
+        #expect(throws: DecodingError.self) {
+            _ = try decoded(discount: discount)
+        }
+    }
+
+    @Test("a deal the register editor of an older build saved with a 19-digit count lists dormant")
+    func olderRegisterDocumentListsDormant() throws {
+        // `DealDraft.mirrorWrite()` of 0.9.0 emitted counts as `.int`; the Firestore SDK hands
+        // them back as an `NSNumber` holding an Int64.
+        let raw: [String: Any] = [
+            "name": "Buy many",
+            "isActive": NSNumber(value: true),
+            "channel": "both",
+            "audience": "any",
+            "discount": ["kind": "buyXGetYBonus",
+                         "buyQty": NSNumber(value: Int64.max),
+                         "bonusQty": NSNumber(value: Int64(1))] as [String: Any],
+            "scope": ["type": "all"] as [String: Any],
+            "condition": ["type": "always", "value": NSNull()] as [String: Any],
+            "perCustomerLimit": NSNumber(value: Int64(0)),
+            "usageLimit": NSNumber(value: Int64(0)),
+        ]
+        let deal = try #require(DealDocumentSanitizer.decodeDeal(raw, id: "r1"))
+        #expect(deal.isActive)
+        #expect(deal.discount == .unsupported(kind: "buyXGetYBonus"))
+    }
+
+    @Test("a register-authored count at the ceiling round-trips to its exact value")
+    func registerAuthoredCeilingCountRoundTrips() throws {
+        var draft = validMinimalDraft()
+        draft.discount = .buyXGetYBonus(buyQty: "1000000", bonusQty: "1")
+        #expect(try decodedDeal(from: draft).discount == .buyXGetYBonus(buyQty: 1_000_000, bonusQty: 1))
+    }
+}

@@ -33,6 +33,11 @@ public enum DraftError: Equatable, Sendable {
     case amountTooPrecise
     case buyQtyInvalid
     case bonusQtyInvalid
+    /// `≤ DraftValidation.maxQuantity` — the UPPER bound every count field shares (`buyQty`,
+    /// `bonusQty`, a tier's `minQty`, a bundle component's `qty`, `condition.minQuantity`),
+    /// worded exactly as the Portal's composer words it. `unlockBonusProduct.quantity` keeps
+    /// its own `.unlockBonusProductQuantityInvalid`.
+    case quantityTooLarge
     case tiersEmpty
     case tierMinQtyInvalid
     case tierUnitPriceInvalid
@@ -85,6 +90,8 @@ public enum DraftError: Equatable, Sendable {
             return "Buy quantity must be at least 1."
         case .bonusQtyInvalid:
             return "Bonus quantity must be at least 1."
+        case .quantityTooLarge:
+            return "That number must be at most 1,000,000."
         case .tiersEmpty:
             return "At least one tier is required."
         case .tierMinQtyInvalid:
@@ -219,15 +226,36 @@ enum DraftValidation {
         return generic
     }
 
-    /// `≥ 1` — every quantity field that is a THRESHOLD (`buyQty`, `bonusQty`, tier `minQty`,
-    /// bundle `qty`, `minQuantity` condition). Deliberately unbounded above: for a threshold, a
-    /// larger number makes the deal HARDER to trigger, so an absurd value fails safe by
-    /// construction. `unlockBonusProduct.quantity` is the one exception in the whole contract —
-    /// see `grantQuantity(_:)`.
+    /// The UPPER bound every count field shares — the Portal composer's `MAX_QUANTITY`
+    /// (`dealCodec.ts`), so both editors accept the same numbers, and the same bound
+    /// `Deal`'s decode holds stored counts to (`DealDiscount.storedCount`).
+    static let maxQuantity: Int = 1_000_000
+
+    /// `1 ≤ n ≤ maxQuantity` — every count field (`buyQty`, `bonusQty`, tier `minQty`, bundle
+    /// `qty`, `minQuantity` condition). `unlockBonusProduct.quantity` narrows this further — see
+    /// `grantQuantity(_:)`.
     static func positiveInt(_ raw: String) -> Int? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let value = Int(trimmed), value >= 1 else { return nil }
+        guard !trimmed.isEmpty, let value = Int(trimmed), value >= 1, value <= maxQuantity else { return nil }
         return value
+    }
+
+    /// `true` only when the buffer is a whole number ABOVE `maxQuantity` (including one too
+    /// long for `Int`), so `validationErrors()` can report `.quantityTooLarge` instead of the
+    /// field's generic "must be at least 1".
+    static func exceedsQuantityCap(_ raw: String) -> Bool {
+        var digits = Substring(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        if digits.first == "+" { digits.removeFirst() }
+        guard !digits.isEmpty, digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
+        guard let value = Int(digits) else { return true }
+        return value > maxQuantity
+    }
+
+    /// The `DraftError` a count buffer that failed `positiveInt` deserves: `.quantityTooLarge`
+    /// above the ceiling, else the field's own generic case. `nil` when the buffer is valid.
+    static func quantityError(_ raw: String, otherwise generic: DraftError) -> DraftError? {
+        guard positiveInt(raw) == nil else { return nil }
+        return exceedsQuantityCap(raw) ? .quantityTooLarge : generic
     }
 
     // MARK: - The one GRANT quantity in the contract

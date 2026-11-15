@@ -242,8 +242,8 @@ struct GrantQuantityBoundaryTests {
         #expect(try decodedQuantity("-4") == -4)
     }
 
-    @Test("the threshold integers keep their unbounded decode — only the GRANT is capped")
-    func thresholdIntegersAreUnbounded() throws {
+    @Test("the threshold integers decode unchanged up to the shared 1,000,000 ceiling — the GRANT has its own 100,000")
+    func thresholdIntegersKeepTheSharedCeiling() throws {
         let json = Data("""
         {"id":"d1","name":"T","isActive":true,
          "discount":{"kind":"buyXGetYBonus","buyQty":500000,"bonusQty":1},
