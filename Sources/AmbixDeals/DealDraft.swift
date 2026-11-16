@@ -377,13 +377,13 @@ public enum DraftDiscount: Sendable, Equatable {
 
         case .buyXGetYBonus(let buyQty, let bonusQty):
             var errors: [DraftError] = []
-            if DraftValidation.positiveInt(buyQty) == nil { errors.append(.buyQtyInvalid) }
-            if DraftValidation.positiveInt(bonusQty) == nil { errors.append(.bonusQtyInvalid) }
+            if let error = DraftValidation.quantityError(buyQty, otherwise: .buyQtyInvalid) { errors.append(error) }
+            if let error = DraftValidation.quantityError(bonusQty, otherwise: .bonusQtyInvalid) { errors.append(error) }
             return errors
 
         case .buyXGetYPercentOff(let buyQty, let percentOff):
             var errors: [DraftError] = []
-            if DraftValidation.positiveInt(buyQty) == nil { errors.append(.buyQtyInvalid) }
+            if let error = DraftValidation.quantityError(buyQty, otherwise: .buyQtyInvalid) { errors.append(error) }
             if DraftValidation.percent(percentOff) == nil { errors.append(.percentInvalid) }
             return errors
 
@@ -391,7 +391,7 @@ public enum DraftDiscount: Sendable, Equatable {
             guard !tiers.isEmpty else { return [.tiersEmpty] }
             var errors: [DraftError] = []
             for tier in tiers {
-                if DraftValidation.positiveInt(tier.minQty) == nil { errors.append(.tierMinQtyInvalid) }
+                if let error = DraftValidation.quantityError(tier.minQty, otherwise: .tierMinQtyInvalid) { errors.append(error) }
                 if let error = DraftValidation.amountError(tier.unitPrice, otherwise: .tierUnitPriceInvalid) { errors.append(error) }
             }
             return errors
@@ -400,7 +400,7 @@ public enum DraftDiscount: Sendable, Equatable {
             guard !tiers.isEmpty else { return [.tiersEmpty] }
             var errors: [DraftError] = []
             for tier in tiers {
-                if DraftValidation.positiveInt(tier.minQty) == nil { errors.append(.tierMinQtyInvalid) }
+                if let error = DraftValidation.quantityError(tier.minQty, otherwise: .tierMinQtyInvalid) { errors.append(error) }
                 if DraftValidation.percent(tier.discountPercent) == nil { errors.append(.percentInvalid) }
             }
             return errors
@@ -416,8 +416,10 @@ public enum DraftDiscount: Sendable, Equatable {
         case .bundle(let components, let bundlePrice):
             var errors: [DraftError] = []
             if !bundleComponentsAreDistinct(components) { errors.append(.bundleNeedsTwoDistinctProducts) }
-            for component in components where DraftValidation.positiveInt(component.qty) == nil {
-                errors.append(.bundleComponentQtyInvalid)
+            for component in components {
+                if let error = DraftValidation.quantityError(component.qty, otherwise: .bundleComponentQtyInvalid) {
+                    errors.append(error)
+                }
             }
             if let error = DraftValidation.amountError(bundlePrice, otherwise: .amountInvalid) { errors.append(error) }
             return errors
@@ -618,7 +620,7 @@ public enum DraftCondition: Sendable, Equatable {
         case .always:
             return []
         case .minQuantity(let raw):
-            return DraftValidation.positiveInt(raw) == nil ? [.conditionMinQuantityInvalid] : []
+            return DraftValidation.quantityError(raw, otherwise: .conditionMinQuantityInvalid).map { [$0] } ?? []
         case .minSubtotal(let raw):
             return DraftValidation.amountError(raw, otherwise: .conditionMinSubtotalInvalid).map { [$0] } ?? []
         }

@@ -94,6 +94,39 @@ Source-compatible with 0.8.0: no new `DealDiscount` or `DraftDiscount` cases, an
 `Deal` init parameters are defaulted. Rebuilding a `Deal` field by field still compiles, but
 silently drops `grouped` and `revision`.
 
+## Stored-number bounds (0.10.0)
+
+`Deal`'s decode holds every number a v1 discount carries to what the promotion editors
+(the Portal composer and `DealDraft`) accept:
+
+- Money (`fixedPrice.price`, `flatAmountOff.amount`, `unlockAmountOffCart.amount`,
+  `bundle.bundlePrice`, every `tieredQty` tier `unitPrice`): $0.00 to $100,000.00, judged on
+  the rounded cents.
+- Counts (`buyQty`, `bonusQty`, `tieredQty`/`mixedCase` tier `minQty`, `bundle` component
+  `qty`): a whole number from 1 to 1,000,000 (`DraftValidation.maxQuantity`, the Portal's
+  `MAX_QUANTITY`). A count is read as a number first, so `2.5` or `1e20` reaches the check.
+
+A value outside its range makes THAT discount `.unsupported(kind:)`: the engine never fires
+it and the Studio never edits it, while the deal still decodes and lists, so it is fixed or
+paused in the Portal. A `memberDiscount` is read the same way (the base deal still applies).
+A required key that is absent or not a number still fails the decode, as before.
+`unlockBonusProduct.quantity` keeps its own 0...100,000 dormant reading. A stored
+`minSubtotal` condition is clamped to $0.00...$100,000.00; `minQuantity` is unchanged.
+
+Authoring: a count above 1,000,000 on any count field (the `minQuantity` condition included)
+blocks the save with the new `DraftError.quantityTooLarge`, worded as the Portal words it:
+"That number must be at most 1,000,000." **`DraftError` gains a case**, so a host's
+exhaustive `switch` over it must add one (Station routes it to the discount section in the
+same commit as its pin bump).
+
+`DealsSettings.decode`: `allowBelowCost` and `dealsEngineEnabled` are on only for a genuine
+boolean `true` (a number, even `1`, reads off), as the Portal and the server read them.
+`bonusUnitFloorCents` is read as the Portal reads it: an exact integer >= 1 is kept, a
+whole finite double >= 1 is kept (saturating at `Int.max` past Int64), anything else is 1.
+
+No new wire key and no key removed: AmbixServer's `shapeGuard.ts` (key lists only) needs no
+change. Release: minor bump to 0.10.0; Station and Daisho both re-pin to it.
+
 ## Lockstep rules
 
 - **This package is the single source of truth for the deals wire shape.** Station
