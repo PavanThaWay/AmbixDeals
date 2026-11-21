@@ -62,6 +62,8 @@ extension GroupedPromotion {
         case (.quantityGroup, .fixedTotal): return "\(size) of the same product for \(money)" + pack
         case (.quantityGroup, _): return "Buy \(size) of the same product, \(pct)% off"
         case (.mixGroup, .fixedTotal): return "Any \(size) from this group for \(money)" + pack
+        case (.mixGroup, .samePriceTotal):
+            return "Any \(size) at \(Self.money(shelfCents ?? 0)) for \(money)" + pack
         case (.mixGroup, _): return "Any \(size) from this group, \(pct)% off"
         case (.buyGetGroup, _):
             return "Buy \(buyQuantity ?? 0), get \(getQuantity ?? 0) \(pct)% off" + Self.dot + "same product"

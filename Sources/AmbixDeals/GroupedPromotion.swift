@@ -15,6 +15,9 @@ public enum GroupedPromotionKind: String, Sendable, Equatable, CaseIterable {
 
 public enum GroupedPromotionMode: String, Sendable, Equatable {
     case salePrice, amountOff, percentOff, fixedTotal
+    /// The case deal (0.11.0): a typed price (`cents`) for `groupSize` packs at the one shelf
+    /// price the deal was made for (`shelfCents`), shared evenly. Mix & match only.
+    case samePriceTotal
 }
 
 public struct GroupedCategoryTarget: Sendable, Equatable {
@@ -43,6 +46,8 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
     public let percent: Int?
     public let unitCount: Int?
     public let groupSize: Int?
+    /// The case deal only: the shelf price of one pack when the deal was made.
+    public let shelfCents: Int?
     public let buyQuantity: Int?
     public let getQuantity: Int?
     public let targets: GroupedTargets?
@@ -56,7 +61,7 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
     static let slotCountRange = 1...20
 
     private enum CodingKeys: String, CodingKey {
-        case kind, mode, cents, percent, unitCount, groupSize, buyQuantity, getQuantity,
+        case kind, mode, cents, percent, unitCount, groupSize, shelfCents, buyQuantity, getQuantity,
              targets, slots, perPurchaseCap
     }
 
@@ -76,6 +81,7 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
         let percent = try Self.int(c, .percent, Self.percentRange)
         let unitCount = try Self.int(c, .unitCount, Self.countRange)
         let groupSize = try Self.int(c, .groupSize, Self.groupSizeRange)
+        let shelfCents = try Self.int(c, .shelfCents, Self.centsRange)
         let buyQuantity = try Self.int(c, .buyQuantity, Self.countRange)
         let getQuantity = try Self.int(c, .getQuantity, Self.countRange)
         let perPurchaseCap = try Self.int(c, .perPurchaseCap, Self.countRange)
@@ -91,6 +97,7 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
             [
                 cents != nil ? CodingKeys.cents : nil, percent != nil ? .percent : nil,
                 unitCount != nil ? .unitCount : nil, groupSize != nil ? .groupSize : nil,
+                shelfCents != nil ? .shelfCents : nil,
                 buyQuantity != nil ? .buyQuantity : nil, getQuantity != nil ? .getQuantity : nil,
                 targets != nil ? .targets : nil, slots != nil ? .slots : nil,
                 perPurchaseCap != nil ? .perPurchaseCap : nil,
@@ -103,12 +110,18 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
             throw Self.corrupt(c, extra, "Field is not allowed for \(kind.rawValue)/\(mode.rawValue)")
         }
 
+        // A case deal is a hand-picked list: never a category, never all products.
+        if mode == .samePriceTotal, let targets, targets.productIds.isEmpty {
+            throw Self.corrupt(c, .targets, "A case deal lists its products")
+        }
+
         self.kind = kind
         self.mode = mode
         self.cents = cents
         self.percent = percent
         self.unitCount = unitCount
         self.groupSize = groupSize
+        self.shelfCents = shelfCents
         self.buyQuantity = buyQuantity
         self.getQuantity = getQuantity
         self.targets = targets
@@ -133,6 +146,8 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
                 return Rule(required: [.percent, .groupSize, .targets], optional: cap)
             case (.quantityGroup, .fixedTotal), (.mixGroup, .fixedTotal):
                 return Rule(required: [.cents, .unitCount, .groupSize, .targets], optional: cap)
+            case (.mixGroup, .samePriceTotal):
+                return Rule(required: [.cents, .shelfCents, .unitCount, .groupSize, .targets], optional: cap)
             case (.buyGetGroup, .percentOff):
                 return Rule(required: [.percent, .buyQuantity, .getQuantity, .targets], optional: cap)
             case (.slotBundle, .fixedTotal):
