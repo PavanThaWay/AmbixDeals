@@ -71,13 +71,13 @@ import Testing
     /// Every field of a `GroupedPromotion`, spelled out (it has no public memberwise init).
     struct Want: Sendable, Equatable {
         var kind: GroupedPromotionKind, mode: GroupedPromotionMode
-        var cents: Int?, percent: Int?, unitCount: Int?, groupSize: Int?
+        var cents: Int?, percent: Int?, unitCount: Int?, groupSize: Int?, shelfCents: Int?
         var buyQuantity: Int?, getQuantity: Int?
         var targets: GroupedTargets?, slots: [GroupedSlot]?, perPurchaseCap: Int?
 
         init(_ g: GroupedPromotion) {
             kind = g.kind; mode = g.mode; cents = g.cents; percent = g.percent
-            unitCount = g.unitCount; groupSize = g.groupSize; buyQuantity = g.buyQuantity
+            unitCount = g.unitCount; groupSize = g.groupSize; shelfCents = g.shelfCents; buyQuantity = g.buyQuantity
             getQuantity = g.getQuantity; targets = g.targets; slots = g.slots
             perPurchaseCap = g.perPurchaseCap
         }
@@ -85,11 +85,11 @@ import Testing
         init(
             _ kind: GroupedPromotionKind, _ mode: GroupedPromotionMode,
             cents: Int? = nil, percent: Int? = nil, unitCount: Int? = nil, groupSize: Int? = nil,
-            buy: Int? = nil, get: Int? = nil, targets: GroupedTargets? = nil,
+            shelfCents: Int? = nil, buy: Int? = nil, get: Int? = nil, targets: GroupedTargets? = nil,
             slots: [GroupedSlot]? = nil, cap: Int? = nil
         ) {
             self.kind = kind; self.mode = mode; self.cents = cents; self.percent = percent
-            self.unitCount = unitCount; self.groupSize = groupSize; buyQuantity = buy
+            self.unitCount = unitCount; self.groupSize = groupSize; self.shelfCents = shelfCents; buyQuantity = buy
             getQuantity = get; self.targets = targets; self.slots = slots; perPurchaseCap = cap
         }
     }
@@ -112,6 +112,11 @@ import Testing
         Row(discount: ["kind": "mixGroup", "mode": "fixedTotal", "cents": 3000, "unitCount": 2,
                        "groupSize": 5, "targets": t, "perPurchaseCap": 7],
             expected: Want(.mixGroup, .fixedTotal, cents: 3000, unitCount: 2, groupSize: 5, targets: gt, cap: 7)),
+        // The case deal (0.11.0): a typed price for packs at the one shelf price it was made for.
+        Row(discount: ["kind": "mixGroup", "mode": "samePriceTotal", "cents": 5999, "shelfCents": 1199,
+                       "unitCount": 4, "groupSize": 6, "targets": tx, "perPurchaseCap": 2],
+            expected: Want(.mixGroup, .samePriceTotal, cents: 5999, unitCount: 4, groupSize: 6,
+                           shelfCents: 1199, targets: gtx, cap: 2)),
         Row(discount: ["kind": "buyGetGroup", "mode": "percentOff", "percent": 50, "buyQuantity": 2,
                        "getQuantity": 3, "targets": t],
             expected: Want(.buyGetGroup, .percentOff, percent: 50, buy: 2, get: 3, targets: gt)),
@@ -133,13 +138,13 @@ import Testing
     // MARK: - The table's refusals, driven from the valid rows
 
     private static let forbiddenValue: [String: Any] = [
-        "cents": 100, "percent": 10, "unitCount": 2, "groupSize": 3, "buyQuantity": 1,
+        "cents": 100, "percent": 10, "unitCount": 2, "groupSize": 3, "shelfCents": 1199, "buyQuantity": 1,
         "getQuantity": 1, "targets": t,
         "slots": [["label": "Wine", "quantity": 1, "unitCount": 1, "targets": t]],
     ]
     private static let ranges: [String: ClosedRange<Int>] = [
         "cents": 1...10_000_000, "percent": 1...99, "unitCount": 1...999, "groupSize": 2...999,
-        "buyQuantity": 1...999, "getQuantity": 1...999, "perPurchaseCap": 1...999,
+        "shelfCents": 1...10_000_000, "buyQuantity": 1...999, "getQuantity": 1...999, "perPurchaseCap": 1...999,
     ]
 
     private func grouped(_ d: Raw) -> GroupedPromotion? { decode(d)?.grouped }
@@ -266,7 +271,26 @@ import Testing
         return item(["targets": x])
     }
 
+    private static func caseDeal(_ extra: [String: any Sendable]) -> [String: any Sendable] {
+        var d: [String: any Sendable] = [
+            "kind": "mixGroup", "mode": "samePriceTotal", "cents": 5999, "shelfCents": 1199,
+            "unitCount": 4, "groupSize": 6, "targets": t,
+        ]
+        for (k, v) in extra { d[k] = v }
+        return d
+    }
+
+    private static let tCategory: [String: any Sendable] = [
+        "productIds": [String](), "categories": [["name": "Seltzer"] as [String: any Sendable]],
+        "allProducts": false, "excludedProductIds": [String](),
+    ]
+
     static let bads: [Bad] = [
+        // A case deal is a hand-picked list: never a category, never all products.
+        Bad(why: "case deal on a category", discount: caseDeal(["targets": tCategory])),
+        Bad(why: "case deal on all products", discount: caseDeal(["targets": tAll])),
+        Bad(why: "case deal with a fractional shelf price", discount: caseDeal(["shelfCents": 1199.5])),
+        Bad(why: "group price carrying a shelf price", discount: caseDeal(["mode": "fixedTotal"])),
         Bad(why: "percent 0", discount: item(["percent": 0])),
         Bad(why: "percent 100", discount: item(["percent": 100])),
         Bad(why: "percent 12.5", discount: item(["percent": 12.5])),
@@ -326,6 +350,10 @@ import Testing
         Outside(name: "buyGetGroup/fixedTotal", discount: ["kind": "buyGetGroup", "mode": "fixedTotal", "cents": 500, "unitCount": 1, "groupSize": 3, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
         Outside(name: "slotBundle/salePrice", discount: ["kind": "slotBundle", "mode": "salePrice", "cents": 500, "unitCount": 1, "slots": oneSlot]),
         Outside(name: "slotBundle/amountOff", discount: ["kind": "slotBundle", "mode": "amountOff", "cents": 500, "unitCount": 1, "slots": oneSlot]),
+        Outside(name: "itemOffer/samePriceTotal", discount: ["kind": "itemOffer", "mode": "samePriceTotal", "cents": 500, "shelfCents": 100, "unitCount": 1, "groupSize": 6, "targets": t]),
+        Outside(name: "quantityGroup/samePriceTotal", discount: ["kind": "quantityGroup", "mode": "samePriceTotal", "cents": 500, "shelfCents": 100, "unitCount": 1, "groupSize": 6, "targets": t]),
+        Outside(name: "buyGetGroup/samePriceTotal", discount: ["kind": "buyGetGroup", "mode": "samePriceTotal", "cents": 500, "shelfCents": 100, "unitCount": 1, "groupSize": 6, "targets": t]),
+        Outside(name: "slotBundle/samePriceTotal", discount: ["kind": "slotBundle", "mode": "samePriceTotal", "cents": 500, "slots": oneSlot]),
         Outside(name: "slotBundle/percentOff", discount: ["kind": "slotBundle", "mode": "percentOff", "percent": 10, "slots": oneSlot]),
         // The same pairs again, carrying exactly what the rule they could be mistaken for would
         // accept, so that nothing but the pair rule refuses them.

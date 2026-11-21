@@ -127,6 +127,27 @@ whole finite double >= 1 is kept (saturating at `Int.max` past Int64), anything 
 No new wire key and no key removed: AmbixServer's `shapeGuard.ts` (key lists only) needs no
 change. Release: minor bump to 0.10.0; Station and Daisho both re-pin to it.
 
+## The case deal (0.11.0)
+
+A new mode on `mixGroup`, `samePriceTotal`: any mix of packs at ONE shelf price fills a
+group for a typed price.
+
+| kind | mode | required (non-null) | must be null or absent | `perPurchaseCap` |
+|---|---|---|---|---|
+| mixGroup | samePriceTotal | cents, shelfCents, unitCount, groupSize, targets | percent, buyQuantity, getQuantity, slots | optional |
+
+- `shelfCents` is the shelf price of one pack when the deal was made, 1 to 10,000,000. It
+  is null or absent on every other kind and mode; a payload that carries it elsewhere is refused.
+- `targets` must be a hand-picked list (`productIds` non-empty). A case deal on a category
+  or on all products is refused.
+- `offerPhrase` reads "Any 6 at $11.99 for $59.99 · 4-pack".
+
+**`GroupedPromotionMode` gains a case**, so a host's exhaustive `switch` over it must add
+one. A consumer on 0.10.0 throws "Unknown grouped mode": `grouped` is nil, the `Deal` still
+decodes and lists, and the promotion prices nothing there. AmbixServer's `wire.ts` carries
+the same row; its `shapeGuard.ts` (top-level key lists only) needs no change.
+Release: minor bump to 0.11.0; Station and Daisho both re-pin to it.
+
 ## Lockstep rules
 
 - **This package is the single source of truth for the deals wire shape.** Station
