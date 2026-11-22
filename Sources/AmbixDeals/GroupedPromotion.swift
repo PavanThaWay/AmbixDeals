@@ -18,6 +18,10 @@ public enum GroupedPromotionMode: String, Sendable, Equatable {
     /// The case deal (0.11.0): a typed price (`cents`) for `groupSize` packs at the one shelf
     /// price the deal was made for (`shelfCents`), shared evenly. Mix & match only.
     case samePriceTotal
+    /// Mix & match counted "or more" (0.12.0): once a sale holds `groupSize` of the list, every one
+    /// takes `percent` off. Plain `percentOff` counts in increments of `groupSize`. Mix & match only,
+    /// and never capped: the deal is taken once, by every bottle.
+    case percentOffOrMore
 }
 
 public struct GroupedCategoryTarget: Sendable, Equatable {
@@ -146,6 +150,8 @@ public struct GroupedPromotion: Sendable, Equatable, Decodable {
                 return Rule(required: [.percent, .groupSize, .targets], optional: cap)
             case (.quantityGroup, .fixedTotal), (.mixGroup, .fixedTotal):
                 return Rule(required: [.cents, .unitCount, .groupSize, .targets], optional: cap)
+            case (.mixGroup, .percentOffOrMore):
+                return Rule(required: [.percent, .groupSize, .targets], optional: [])
             case (.mixGroup, .samePriceTotal):
                 return Rule(required: [.cents, .shelfCents, .unitCount, .groupSize, .targets], optional: cap)
             case (.buyGetGroup, .percentOff):

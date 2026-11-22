@@ -148,6 +148,24 @@ decodes and lists, and the promotion prices nothing there. AmbixServer's `wire.t
 the same row; its `shapeGuard.ts` (top-level key lists only) needs no change.
 Release: minor bump to 0.11.0; Station and Daisho both re-pin to it.
 
+## Mix & match or more (0.12.0)
+
+A new mode on `mixGroup`, `percentOffOrMore`: once a sale holds `groupSize` of the list, every
+one of them takes `percent` off. Plain `percentOff` counts in increments: with a group of 6, a
+7th pays shelf price until the 12th.
+
+| kind | mode | required (non-null) | must be null or absent | `perPurchaseCap` |
+|---|---|---|---|---|
+| mixGroup | percentOffOrMore | percent, groupSize, targets | cents, unitCount, shelfCents, buyQuantity, getQuantity, slots | **refused** |
+
+- The deal is taken once, by every bottle, so it carries no most-times-in-one-sale.
+- `offerPhrase` reads "Any 6 or more from this group, 10% off every one".
+
+**`GroupedPromotionMode` gains a case**, so a host's exhaustive `switch` over it must add one.
+A consumer on 0.11.0 throws "Unknown grouped mode": `grouped` is nil, the `Deal` still decodes
+and lists, and the promotion prices nothing there. AmbixServer's `wire.ts` carries the same row.
+Release: minor bump to 0.12.0; Station re-pins to it.
+
 ## Lockstep rules
 
 - **This package is the single source of truth for the deals wire shape.** Station
