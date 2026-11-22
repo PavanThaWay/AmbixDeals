@@ -112,6 +112,9 @@ import Testing
         Row(discount: ["kind": "mixGroup", "mode": "fixedTotal", "cents": 3000, "unitCount": 2,
                        "groupSize": 5, "targets": t, "perPurchaseCap": 7],
             expected: Want(.mixGroup, .fixedTotal, cents: 3000, unitCount: 2, groupSize: 5, targets: gt, cap: 7)),
+        // Mix & match counted or more (0.12.0): N or more of the list, every one at the percent. No cap.
+        Row(discount: ["kind": "mixGroup", "mode": "percentOffOrMore", "percent": 10, "groupSize": 6, "targets": tx],
+            expected: Want(.mixGroup, .percentOffOrMore, percent: 10, groupSize: 6, targets: gtx)),
         // The case deal (0.11.0): a typed price for packs at the one shelf price it was made for.
         Row(discount: ["kind": "mixGroup", "mode": "samePriceTotal", "cents": 5999, "shelfCents": 1199,
                        "unitCount": 4, "groupSize": 6, "targets": tx, "perPurchaseCap": 2],
@@ -159,7 +162,8 @@ import Testing
     func everyRefusalRuleOfTheTableHolds(_ row: Row) throws {
         let base: Raw = row.discount.mapValues { $0 as Any }
         #expect(grouped(base) != nil)
-        let optionalCap = row.expected.kind != .itemOffer
+        // An item offer and mix & match or more are taken without a most-times-in-one-sale.
+        let optionalCap = row.expected.kind != .itemOffer && row.expected.mode != .percentOffOrMore
         let required = Set(base.keys).subtracting(["kind", "mode", "perPurchaseCap"])
 
         for key in required {
@@ -173,7 +177,7 @@ import Testing
         if optionalCap {
             #expect(grouped(with(base, "perPurchaseCap", NSNull())) != nil)
         } else {
-            #expect(grouped(with(base, "perPurchaseCap", 2)) == nil, "itemOffer carries no cap")
+            #expect(grouped(with(base, "perPurchaseCap", 2)) == nil, "\(row.expected.kind)/\(row.expected.mode) carries no cap")
         }
         for (key, range) in Self.ranges where required.contains(key) || (key == "perPurchaseCap" && optionalCap) {
             #expect(grouped(with(base, key, range.lowerBound)) != nil, "\(key) low edge")
@@ -286,6 +290,10 @@ import Testing
     ]
 
     static let bads: [Bad] = [
+        // Or more is taken once, by every bottle: it never carries a most-times-in-one-sale.
+        Bad(why: "or more with a cap", discount: ["kind": "mixGroup", "mode": "percentOffOrMore", "percent": 10, "groupSize": 6,
+                                                   "targets": t, "perPurchaseCap": 2]),
+        Bad(why: "or more without a group size", discount: ["kind": "mixGroup", "mode": "percentOffOrMore", "percent": 10, "targets": t]),
         // A case deal is a hand-picked list: never a category, never all products.
         Bad(why: "case deal on a category", discount: caseDeal(["targets": tCategory])),
         Bad(why: "case deal on all products", discount: caseDeal(["targets": tAll])),
@@ -355,6 +363,10 @@ import Testing
         Outside(name: "buyGetGroup/samePriceTotal", discount: ["kind": "buyGetGroup", "mode": "samePriceTotal", "cents": 500, "shelfCents": 100, "unitCount": 1, "groupSize": 6, "targets": t]),
         Outside(name: "slotBundle/samePriceTotal", discount: ["kind": "slotBundle", "mode": "samePriceTotal", "cents": 500, "slots": oneSlot]),
         Outside(name: "slotBundle/percentOff", discount: ["kind": "slotBundle", "mode": "percentOff", "percent": 10, "slots": oneSlot]),
+        Outside(name: "itemOffer/percentOffOrMore", discount: ["kind": "itemOffer", "mode": "percentOffOrMore", "percent": 10, "targets": t]),
+        Outside(name: "quantityGroup/percentOffOrMore", discount: ["kind": "quantityGroup", "mode": "percentOffOrMore", "percent": 10, "groupSize": 6, "targets": t]),
+        Outside(name: "buyGetGroup/percentOffOrMore", discount: ["kind": "buyGetGroup", "mode": "percentOffOrMore", "percent": 10, "buyQuantity": 1, "getQuantity": 1, "targets": t]),
+        Outside(name: "slotBundle/percentOffOrMore", discount: ["kind": "slotBundle", "mode": "percentOffOrMore", "percent": 10, "slots": oneSlot]),
         // The same pairs again, carrying exactly what the rule they could be mistaken for would
         // accept, so that nothing but the pair rule refuses them.
         Outside(name: "itemOffer/fixedTotal (as a sale price)", discount: ["kind": "itemOffer", "mode": "fixedTotal", "cents": 500, "unitCount": 1, "targets": t]),

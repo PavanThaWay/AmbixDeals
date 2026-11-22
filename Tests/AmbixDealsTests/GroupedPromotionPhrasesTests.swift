@@ -66,6 +66,8 @@ import Testing
              phrase: "Any 12 at $2.50 for $24.00 \u{B7} Max 2 per sale"),
         Case(discount: ["kind": "itemOffer", "mode": "percentOff", "percent": 10, "targets": t],
              phrase: "10% off each"),
+        Case(discount: ["kind": "mixGroup", "mode": "percentOffOrMore", "percent": 10, "groupSize": 6, "targets": t],
+             phrase: "Any 6 or more from this group, 10% off every one"),
         Case(discount: ["kind": "quantityGroup", "mode": "percentOff", "percent": 10, "groupSize": 3, "targets": t],
              phrase: "Buy 3 of the same product, 10% off"),
         Case(discount: ["kind": "quantityGroup", "mode": "fixedTotal", "cents": 2500, "unitCount": 1,
